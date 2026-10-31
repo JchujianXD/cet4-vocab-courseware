@@ -834,16 +834,15 @@ const Study = (() => {
     return out;
   }
   function showRecall() {
-    const q = D.rc.current, x = D.q.x, s = Recall.summary(D.rc), layers = recallLayers(x);
+    const q = D.rc.current, x = D.q.x, s = Recall.summary(D.rc);
     // 沿用原词卡，不重排或删掉卡片内容；用原背诵模式的模糊方式遮住答案，点击遮挡处展开。
-    const head = `${wordHead(x, q.revealed)}${backHTML(x)}`;
-    const hints = q.hints.length ? `<p class="hint-used">已使用提示${q.hints.includes("audio") ? " · 读音" : ""}${q.hints.includes("choice") ? " · 四选一" : ""}，本次不能计为独立想起</p>` : '<p class="note">先想主要意思，点击模糊的释义核对；中文近义表达也算。</p>';
-    const aux = q.aux && !q.revealed ? `<div class="qopts">${q.aux.opts.map((o, i) => `<button class="qopt" data-recall-choice="${i}"><kbd>${i + 1}</kbd><span>${esc(o)}</span></button>`).join("")}</div>` : "";
+    const head = `${wordHead(x, true)}${backHTML(x)}`;
+    const hints = q.hints.length ? `<p class="hint-used">已使用提示${q.hints.includes("audio") ? " · 读音" : ""}${q.hints.includes("video") ? " · 视频" : ""}，本次不能计为独立想起</p>` : "";
     const rate = (r, label, variant) => `<wa-button variant="${variant}" data-recall-rate="${r}">${label}</wa-button>`;
     const controls = q.answered ? `<p class="recall-verdict">${RECALL_LABEL[q.answered]}</p><wa-button variant="brand" data-next="1">继续 <kbd>空格</kbd></wa-button>` : q.revealed
-      ? `<p class="note recall-rubric">核对揭晓前是否想对主要意思；只觉得眼熟、选错或没想起，请选“没想起”。</p><div class="recall-ratings">${q.choiceWrong ? "" : q.hints.length ? rate("hinted", "提示后想起", "warning") : rate("independent", "想起了", "success") + rate("effort", "想得费劲", "brand")}${rate("failed", "没想起", "danger")}</div>`
-      : `${q.layer < layers.length ? `<wa-button appearance="outlined" data-recall-hint="1">提示：${layers[q.layer].label}</wa-button>` : ""}<wa-button variant="brand" data-recall-reveal="1">揭晓 <kbd>空格</kbd></wa-button>${!q.aux && meanText(x.e) ? '<button data-recall-aux="1">四选一</button>' : ""}${chopBtn(x)}`;
-    put(`<div class="drill recall${q.revealed ? " flipped" : ""}"><div class="dbar"><span>${esc(D.title)}${q.retry ? " · 补测" : ""}</span><wa-progress-bar value="${s.total ? Math.round(s.completed / s.total * 100) : 0}"></wa-progress-bar><span>已做 ${s.completed}/${s.total} · 补测 ${s.retries}/${D.rc.added}</span><a href="#/" class="dx" title="退出并保存">✕</a></div><div class="dcard${q.revealed ? "" : " locked"}">${head}${hints}${aux}</div><div class="dops">${controls}</div></div>`);
+      ? `<div class="recall-ratings">${q.choiceWrong ? "" : q.hints.length ? rate("hinted", "提示后想起", "warning") : rate("independent", "想起了", "success") + rate("effort", "想得费劲", "brand")}${rate("failed", "没想起", "danger")}</div>`
+      : `<wa-button variant="brand" data-recall-reveal="1">揭晓 <kbd>空格</kbd></wa-button>${chopBtn(x)}`;
+    put(`<div class="drill recall flipped"><div class="dbar"><span>${esc(D.title)}${q.retry ? " · 补测" : ""}</span><wa-progress-bar value="${s.total ? Math.round(s.completed / s.total * 100) : 0}"></wa-progress-bar><span>已做 ${s.completed}/${s.total} · 补测 ${s.retries}/${D.rc.added}</span><a href="#/" class="dx" title="退出并保存">✕</a></div><div class="dcard${q.revealed ? "" : " locked"}">${head}${hints}</div><div class="dops">${controls}</div></div>`);
     if (!q.revealed) {
       const cover = (selector, kind, label) => {
         if (q.hints.includes(kind)) return;
@@ -883,35 +882,22 @@ const Study = (() => {
   function recallClick(t) {
     const q = D.rc.current;
     if (t.closest("[data-next]")) { if (q.answered) next(); return; }
-    if (q.answered) {
-      const sent = t.closest("[data-sent]");
-      if (sent) saySent(D.q.x, /slow/.test(sent.dataset.sent), sent.dataset.sent.startsWith("src"));
-      else if (t.closest("[data-say],[data-recall-audio]")) sayWord(D.q.x);
-      return;
+    // 揭晓和评分后共用同一套播放处理，扩展词也按自己的词匹配音频。
+    if (q.revealed) {
+      const sx = t.closest("[data-sayx]"), sent = t.closest("[data-sent]");
+      if (sx) { sayWord(D.q.x, sx.dataset.sayx); return; }
+      if (sent) { saySent(D.q.x, /slow/.test(sent.dataset.sent), sent.dataset.sent.startsWith("src")); return; }
+      if (t.closest("[data-say]")) { sayWord(D.q.x); return; }
     }
+    if (q.answered) return;
     if (t.closest("[data-recall-reveal]")) { revealRecall(); return; }
     const covered = t.closest("[data-recall-cover]");
     if (covered) { covered.dataset.recallCover === "reveal" ? revealRecall() : expandRecall(covered.dataset.recallCover); return; }
-    if (t.closest("[data-recall-hint]")) {
-      const layers = recallLayers(D.q.x), layer = layers[q.layer];
-      if (layer) expandRecall(layer.kind); return;
-    }
-    if (t.closest("[data-recall-audio],[data-say]")) { if (!q.revealed) hintRecall("audio"); sayWord(D.q.x); showRecall(); return; }
-    if (t.closest("[data-recall-aux]")) {
-      hintRecall("choice"); const aux = makeQ(D.q.x, "mean");
-      D.rc.current.aux = {opts: aux.opts, ans: aux.ans}; progSave(); showRecall(); return;
-    }
-    const option = t.closest("[data-recall-choice]");
-    if (option && !q.revealed && q.aux) { q.choiceWrong = +option.dataset.recallChoice !== q.aux.ans; revealRecall(); return; }
+    if (t.closest("[data-say]")) { hintRecall("audio"); sayWord(D.q.x); showRecall(); return; }
     const rating = t.closest("[data-recall-rate]"); if (rating) { answerRecall(rating.dataset.recallRate); return; }
     if (t.closest("[data-chop]")) { chopRecall(); return; }
     const sentence = t.closest("[data-sent]");
     if (sentence) { if (!q.revealed) expandRecall("example"); saySent(D.q.x, /slow/.test(sentence.dataset.sent), sentence.dataset.sent.startsWith("src")); return; }
-    if (q.revealed) {
-      const sent = t.closest("[data-sent]"), sx = t.closest("[data-sayx]");
-      if (sent) saySent(D.q.x, /slow/.test(sent.dataset.sent), sent.dataset.sent.startsWith("src"));
-      else if (sx) sayWord(D.q.x, sx.dataset.sayx);
-    }
   }
   function answerRecall(result) {
     if (D.rc.d !== T() || D.rc.current?.answered || !D.rc.current?.revealed) return;
@@ -1308,7 +1294,6 @@ const Study = (() => {
       if (e.key === "r" || e.key === "R") { if (!c.revealed) hintRecall("audio"); sayWord(q.x); showRecall(); }
       else if (e.key === "s" || e.key === "S") chopRecall();
       else if (e.key === " " || e.key === "Enter") { e.preventDefault(); if (c.answered) next(); else if (!c.revealed) revealRecall(); }
-      else if (c.aux && !c.revealed && /^[1-4]$/.test(e.key) && +e.key <= c.aux.opts.length) { c.choiceWrong = +e.key - 1 !== c.aux.ans; revealRecall(); }
       return;
     }
     if (e.target.id === "spell") {                   // 拼写框：Enter 提交、Esc 不会，其余照常打字
@@ -1427,6 +1412,12 @@ const Study = (() => {
     if (u) fillCounts(u.lessons.filter(l => l.ready).map(l => l.id), paintLogBar);
   }
   document.addEventListener("keydown", drillKey);
+  // 视频由 app.js 的 document 捕获监听器打开并停止冒泡；同层捕获才能记录这次帮助。
+  document.addEventListener("click", e => {
+    if (D?.rc && !D.rc.current?.revealed && e.target.closest("#studyView a[data-vi]")) {
+      hintRecall("video"); showRecall();
+    }
+  }, true);
   const bind = () => { view().addEventListener("click", onClick); view().addEventListener("change", onChange); view().addEventListener("toggle", onToggle, true); };
   bind();
 

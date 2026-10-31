@@ -708,8 +708,11 @@ document.addEventListener("touchend", e => {
 /* ---------- 其他点击 ---------- */
 document.addEventListener("click", e => {
   const t = e.target;
-  if (t.closest(".study") && !pop.contains(t)) pop.style.display = "none";
-  if (t.closest(".top,.drawer,.fabs,.settings,.viewer,.study,.peek")) { if (!t.closest(".search")) $("#qres").style.display = "none"; return; }
+  // 学习卡会在本次点击内重画；原按钮已脱离 DOM 时，closest 找不到 .study。
+  // 事件原始路径仍含 studyView，不能再把内部 data-say 标记当课文内容朗读。
+  const inStudy = e.composedPath().includes($("#studyView"));
+  if (inStudy && !pop.contains(t)) pop.style.display = "none";
+  if (inStudy || t.closest(".top,.drawer,.fabs,.settings,.viewer,.study,.peek")) { if (!t.closest(".search")) $("#qres").style.display = "none"; return; }
   if (t.dataset.say || t.classList.contains("play")) stopMarathon();
   if (t.dataset.say) { speak(t.dataset.say); return; }
   if (t.classList.contains("play")) { playSentence(t.closest(".card"), null, t.dataset.slow ? 0.75 : rate()); return; }
