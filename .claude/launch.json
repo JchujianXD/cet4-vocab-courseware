@@ -14,6 +14,12 @@
       "port": 8775
     },
     {
+      "name": "local-test",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["devtools/local-test-server.py"],
+      "port": 18775
+    },
+    {
       "name": "audio",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8766", "--directory", "audio-store"],

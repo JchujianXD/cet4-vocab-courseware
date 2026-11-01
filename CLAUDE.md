@@ -14,6 +14,7 @@
 - 部署：先 `python pipeline/publish_audio.py` 推音频，再推主仓库 `main`，自动部署（`.github/workflows/deploy.yml`：校验 → 检查音频已上线 → 目录索引 → GitHub Pages）。线上地址 https://cet4.owenwoow.com/（自定义域名，旧的 github.io 地址会自动跳转过来；云同步 token 按网址存，要在这个地址下粘贴）
 - 云端生成音频（默认，本地网络跑 edge-tts 会卡死）：Actions → `audio` 工作流（`.github/workflows/audio.yml`），手动触发，填课程 id；并发固定 3（服务器 IP 易被限流），生成后自动推音频仓库并把清单提交回 `main`。需要 Secret `AUDIO_REPO_TOKEN`（PAT，详见工作流文件头部）
 - 本地预览要起两个服务：课件 8765（`site/`）、音频 8766（`audio-store/`），见 `.claude/launch.json`；8765 被占用时用备用的 `site-alt`（8775，localStorage 按端口隔离，测试数据不串）
+- 本地快速验收：运行 `python devtools/local-test-server.py`，打开 http://127.0.0.1:18775/test；音频另起 8766。入口每次重置演示进度，测试服务只监听本机、独立存储且阻断云同步；不得连接真实 Gist 或导入真实学习数据。两台开发机通过 Git 同步 `devtools/` 代码，测试记录各自留在本机；工具不部署。需要用户验收时优先启动入口并告知测试范围。
 - 新电脑上恢复音频目录：`git clone https://github.com/Owenwoow/cet4-vocab-audio.git audio-store`
 - 讲解视频时间点：`python pipeline/video_align.py` 重新对齐生成 `site/data/video/`（只在本机跑：要 B 站登录 cookie，环境变量 `BILI_COOKIE`，默认 `~/Downloads/bilibili_cookie.json`；字幕缓存在 `work/bili/`，没缓存时约 280 次请求、5 分钟）；`--check` 查视频是否下架并更新 `alive`（不用 cookie）；`--sample 3 --seed N` 每单元抽 3 词打印落点前后字幕。视频下架或有人重新上传：改 `pipeline/video_sources.json` 再重跑
 
@@ -35,6 +36,7 @@
 - `site/data/audio/*.json`：每课音频清单（进 git）；音频文件本身在单独的仓库 `cet4-vocab-audio`，本地克隆在 `audio-store/`（主仓库忽略）
 - `site/data/video/*.json`：每课每个词条在各 B 站讲解视频里的「分 P、秒」（`pipeline/video_align.py` 从 AI 字幕对齐生成），前端选视频规则在 `site/video.js`；视频表（优先级、分 P 范围和时长）手录在 `pipeline/video_sources.json`
 - `site/data/pages/`、`work/`：脚本生成，不进 git
+- `devtools/`：随仓库同步的本地验收工具，不放入 `site/`，不部署
 
 ## 项目约束
 

@@ -70,6 +70,8 @@ python -m http.server 8765 --directory site
 
 然后打开 <http://localhost:8765>。音频放在单独的仓库 [cet4-vocab-audio](https://github.com/Owenwoow/cet4-vocab-audio)，本地要听音频的话克隆到 `audio-store/` 再起一个 8766 端口的服务。
 
+本地快速验收可运行 `python devtools/local-test-server.py`，打开 <http://127.0.0.1:18775/test>，按需进入各练习模式；听音频时另运行 `python -m http.server 8766 --directory audio-store`。工具只监听本机，使用独立浏览器存储并阻止云同步；每次选择模式重置演示进度，请勿导入真实记录或连接 Gist。两台开发机通过 Git 同步工具代码，演示数据各自保存在本机。工具不属于 `site/`，不会部署到网站。
+
 测试：
 
 ```bash
