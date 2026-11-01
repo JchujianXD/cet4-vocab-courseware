@@ -811,7 +811,7 @@ const Study = (() => {
       <div class="ops"><button data-sent="1">▶ 例句</button><button data-sent="slow">🐢 慢速</button></div></div>` : ""}
     ${x.e.ext && x.e.ext.length ? `<div class="dext">${x.e.ext.map(y => `<div class="dextrow"><span class="tag">扩</span><b data-sayx="${esc(y.word)}">${esc(y.word)}</b>
       <span class="ipa">${esc(y.ipa)}</span><button class="spk sm" data-sayx="${esc(y.word)}" title="读">🔊</button>
-      <span>${y.senses.map(s => `<span class="pos">${esc(s.pos)}</span>${meanHTML(s.mean)}`).join("　")}</span></div>`).join("")}</div>` : ""}
+      <span class="dext-mean">${y.senses.map(s => `<span class="pos">${esc(s.pos)}</span>${meanHTML(s.mean)}`).join("　")}</span></div>`).join("")}</div>` : ""}
     ${meetHTML(x)}</div>`;
   /* vid：翻开 / 答完以后才在 🔊 旁边放讲解视频按钮（答题前放出来就等于给了答案） */
   const wordHead = (x, vid) => `<div class="dword" data-say="1">${esc(x.word)}</div>
@@ -824,36 +824,29 @@ const Study = (() => {
     const c = D.rc.current;
     if (!c) { D.q = null; endRecall(); return; }
     const x = D.items.find(x => x.word === c.w);
+    if (!c.answered) c.hints = c.hints.filter(h => h !== "audio");
     D.q = {x, kind: "recall", state: c.answered ? "done" : "ask"}; showRecall();
-  }
-  function recallLayers(x) {
-    const out = [];
-    if (x.e.tip || x.e.root) out.push({kind: "memory", label: "记忆法"});
-    const ex = x.nb && x.src ? x.src.ex : x.e.ex;
-    if (ex?.en) out.push({kind: "example", label: "英文例句"});
-    return out;
+    sayWord(x);
   }
   function showRecall() {
     const q = D.rc.current, x = D.q.x, s = Recall.summary(D.rc);
     // 沿用原词卡，不重排或删掉卡片内容；用原背诵模式的模糊方式遮住答案，点击遮挡处展开。
     const head = `${wordHead(x, true)}${backHTML(x)}`;
-    const hints = q.hints.length ? `<p class="hint-used">已使用提示${q.hints.includes("audio") ? " · 读音" : ""}${q.hints.includes("video") ? " · 视频" : ""}，本次不能计为独立想起</p>` : "";
+    const hints = q.hints.length ? `<p class="hint-used">已使用提示${q.hints.includes("video") ? " · 视频" : ""}，本次不能计为独立想起</p>` : "";
     const rate = (r, label, variant) => `<wa-button variant="${variant}" data-recall-rate="${r}">${label}</wa-button>`;
     const controls = q.answered ? `<p class="recall-verdict">${RECALL_LABEL[q.answered]}</p><wa-button variant="brand" data-next="1">继续 <kbd>空格</kbd></wa-button>` : q.revealed
       ? `<div class="recall-ratings">${q.choiceWrong ? "" : q.hints.length ? rate("hinted", "提示后想起", "warning") : rate("independent", "想起了", "success") + rate("effort", "想得费劲", "brand")}${rate("failed", "没想起", "danger")}</div>`
       : `<wa-button variant="brand" data-recall-reveal="1">揭晓 <kbd>空格</kbd></wa-button>${chopBtn(x)}`;
     put(`<div class="drill recall flipped"><div class="dbar"><span>${esc(D.title)}${q.retry ? " · 补测" : ""}</span><wa-progress-bar value="${s.total ? Math.round(s.completed / s.total * 100) : 0}"></wa-progress-bar><span>已做 ${s.completed}/${s.total} · 补测 ${s.retries}/${D.rc.added}</span><a href="#/" class="dx" title="退出并保存">✕</a></div><div class="dcard${q.revealed ? "" : " locked"}">${head}${hints}</div><div class="dops">${controls}</div></div>`);
-    if (!q.revealed) {
+    {
       const cover = (selector, kind, label) => {
-        if (q.hints.includes(kind)) return;
         for (const el of view().querySelectorAll(selector)) {
           el.classList.add("recall-cover"); el.dataset.recallCover = kind;
           el.setAttribute("role", "button"); el.setAttribute("tabindex", "0"); el.setAttribute("aria-label", label);
         }
       };
-      cover(".recall .dsense,.recall .dzh,.recall .dext,.recall .dnote", "reveal", "点击揭晓释义和译文");
-      cover(".recall .tip", "memory", "展开记忆法（计为提示）");
-      cover(".recall .sent", "example", "展开英文例句（计为提示）");
+      if (!q.revealed) cover(".recall .dsense,.recall .dext-mean,.recall .dnote,.recall .tip", "reveal", "点击显示单词意思和记忆法");
+      if (!q.zhRevealed) cover(".recall .dzh", "translation", "点击显示例句译文");
     }
   }
   function revealRecall() {
@@ -864,10 +857,7 @@ const Study = (() => {
     D.rc = Recall.hint(D.rc, kind); progSave();
   }
   function expandRecall(kind) {
-    const layers = recallLayers(D.q.x), index = layers.findIndex(l => l.kind === kind);
-    if (index < 0) return;
-    for (const layer of layers.slice(0, index + 1)) hintRecall(layer.kind);
-    D.rc.current.layer = Math.max(D.rc.current.layer, index + 1); progSave(); showRecall();
+    if (kind === "translation") { D.rc.current.zhRevealed = true; progSave(); showRecall(); }
   }
   function chopRecall() {
     const q = D.rc.current, x = D.q.x, c = Sync.get(cardKey(x), 0);
@@ -883,9 +873,10 @@ const Study = (() => {
     const q = D.rc.current;
     if (t.closest("[data-next]")) { if (q.answered) next(); return; }
     // 揭晓和评分后共用同一套播放处理，扩展词也按自己的词匹配音频。
+    const sx = t.closest("[data-sayx]");
+    if (sx) { sayWord(D.q.x, sx.dataset.sayx); return; }
     if (q.revealed) {
-      const sx = t.closest("[data-sayx]"), sent = t.closest("[data-sent]");
-      if (sx) { sayWord(D.q.x, sx.dataset.sayx); return; }
+      const sent = t.closest("[data-sent]");
       if (sent) { saySent(D.q.x, /slow/.test(sent.dataset.sent), sent.dataset.sent.startsWith("src")); return; }
       if (t.closest("[data-say]")) { sayWord(D.q.x); return; }
     }
@@ -893,11 +884,11 @@ const Study = (() => {
     if (t.closest("[data-recall-reveal]")) { revealRecall(); return; }
     const covered = t.closest("[data-recall-cover]");
     if (covered) { covered.dataset.recallCover === "reveal" ? revealRecall() : expandRecall(covered.dataset.recallCover); return; }
-    if (t.closest("[data-say]")) { hintRecall("audio"); sayWord(D.q.x); showRecall(); return; }
+    if (t.closest("[data-say]")) { sayWord(D.q.x); return; }
     const rating = t.closest("[data-recall-rate]"); if (rating) { answerRecall(rating.dataset.recallRate); return; }
     if (t.closest("[data-chop]")) { chopRecall(); return; }
     const sentence = t.closest("[data-sent]");
-    if (sentence) { if (!q.revealed) expandRecall("example"); saySent(D.q.x, /slow/.test(sentence.dataset.sent), sentence.dataset.sent.startsWith("src")); return; }
+    if (sentence) { saySent(D.q.x, /slow/.test(sentence.dataset.sent), sentence.dataset.sent.startsWith("src")); return; }
   }
   function answerRecall(result) {
     if (D.rc.d !== T() || D.rc.current?.answered || !D.rc.current?.revealed) return;
@@ -924,7 +915,7 @@ const Study = (() => {
       const nr = nightRecord(), old = nr.items[c.life] || {};
       pairs.push([nightKey(), {...nr, skipped: false, finished: false, items: {...nr.items, [c.life]: {...old, word: x.word, ...(q.retry ? {retry: result} : {first: result, hints: q.hints})}}}]);
     }
-    D.q.state = "done"; progSave(pairs); showRecall();
+    D.q.state = "done"; progSave(pairs); next();
   }
   function endRecall() {
     const s = Recall.summary(D.rc), pairs = [];
@@ -1291,7 +1282,7 @@ const Study = (() => {
       if (e.target.closest?.("input,select,textarea")) return;
       const covered = e.target.closest?.("[data-recall-cover]");
       if (covered && (e.key === " " || e.key === "Enter")) { e.preventDefault(); covered.dataset.recallCover === "reveal" ? revealRecall() : expandRecall(covered.dataset.recallCover); return; }
-      if (e.key === "r" || e.key === "R") { if (!c.revealed) hintRecall("audio"); sayWord(q.x); showRecall(); }
+      if (e.key === "r" || e.key === "R") { sayWord(q.x); }
       else if (e.key === "s" || e.key === "S") chopRecall();
       else if (e.key === " " || e.key === "Enter") { e.preventDefault(); if (c.answered) next(); else if (!c.revealed) revealRecall(); }
       return;

@@ -90,18 +90,24 @@ function harness(hash = "#/drill/due", saved = {}) {
   return h;
 }
 
-test("回忆读音重画后，同一次点击不会被课文监听器再读成 one；扩展词在评分后仍可读", async () => {
+test("回忆自动读词，手动读音不计提示；评分后直接进入下一词", async () => {
   const h = await harness().render(), word = h.word();
   const audio = json("data/audio/u07-l01.json");
-  h.click({say: "1"});
   assert.deepEqual(h.plays, [audio.w[word].ava]);
+  h.click({say: "1"});
+  assert.deepEqual(h.plays, [audio.w[word].ava, audio.w[word].ava]);
   assert.deepEqual(h.speech, []);
-  assert.deepEqual(h.progress().current.hints, ["audio"]);
+  assert.deepEqual(h.progress().current.hints, []);
+  assert.match(h.html, /data-sayx="specifically"[\s\S]*?class="dext-mean"/);
+  h.click({sayx: "specifically"});
+  assert.equal(h.plays.at(-1), audio.w.specifically.ava);
   h.click({recallReveal: "1"});
   h.click({sayx: "specifically"});
-  h.click({recallRate: "hinted"});
-  h.click({sayx: "specify"});
-  assert.deepEqual(h.plays.slice(1), [audio.w.specifically.ava, audio.w.specify.ava]);
+  assert.equal(h.plays.at(-1), audio.w.specifically.ava);
+  h.click({recallRate: "independent"});
+  assert.equal(h.progress().first[word].result, "independent");
+  assert.notEqual(h.word(), word);
+  assert.equal(h.plays.length, 5);
   assert.deepEqual(h.speech, []);
 });
 

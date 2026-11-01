@@ -652,8 +652,11 @@ body.vp-open{padding-bottom:calc(min(460px,100vw - 32px) * 9 / 16 + 64px)}
 .quiz .dops .note{margin:0;text-align:center}
 .recall .dcard{cursor:default}
 /* 沿用原背诵遮挡的 6px 模糊、点击展开；只影响当前回忆卡，不改全站遮挡设置。 */
+.mask .study .recall .tip{filter:none}
 .study .recall .recall-cover{filter:blur(6px);cursor:pointer;transition:filter .2s;user-select:none}
+.mask .study .recall .tip.recall-cover{filter:blur(6px)}
 .study .recall .recall-cover *{pointer-events:none}
+.study .recall .dzh.recall-cover~.anBtn,.study .recall .dzh.recall-cover~.an{filter:blur(6px);pointer-events:none;user-select:none}
 .study .recall .recall-cover:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .recall .dops{flex-wrap:wrap;gap:10px}
 .recall .dops>.recall-rubric,.recall .dops>.recall-verdict{flex-basis:100%;margin:0;text-align:center}
