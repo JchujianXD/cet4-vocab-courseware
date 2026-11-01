@@ -50,6 +50,19 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
+        if url.path == '/sync.js':
+            source = (SITE / 'sync.js').read_text(encoding='utf-8')
+            original = 'const P = "lx:sync:", FILE ='
+            if original not in source:
+                self.send_error(500, 'Test storage namespace could not be isolated')
+                return
+            content = source.replace(original, 'const P = "lx:local-test:sync:", FILE =', 1).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/javascript; charset=utf-8')
+            self.send_header('Content-Length', str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
         if url.path == '/test':
             links = ''.join(f'<a href="/start?mode={k}">{v[0]}</a>' for k, v in MODES.items())
             self.html('''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>本地验收入口</title><style>body{font:16px system-ui;background:#15171b;color:#eee;margin:0;padding:24px}main{max-width:760px;margin:auto}p{color:#b9c0cc;line-height:1.7}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}a{display:block;padding:16px;background:#282b32;border:1px solid #474d5b;border-radius:9px;color:#fff;text-decoration:none;text-align:center}a:hover{border-color:#f0a044}</style><main><h1>本地验收入口</h1><p>选择模式后进入演示课件。每次选择都会重新准备四个演示词，方便反复检查。测试成绩只存当前浏览器的独立本地地址，不能连接云同步。返回此页可切换模式。</p><div class="grid">''' + links + '''</div></main></html>''')
@@ -69,18 +82,11 @@ class Handler(SimpleHTTPRequestHandler):
               doc['srs:'+x.word] = [card, now]; doc[`learn:${x.lid}:g${x.group}`] = [day, now];
             }
             for (const [k,v] of Object.entries({autoSay:false,autoEx:false,voice:'ava'})) doc['set:'+k]=[v,now];
-            const previousDoc = localStorage.getItem('lx:sync:doc');
-            let oldTest = false;
-            try {
-              const old = previousDoc && JSON.parse(previousDoc), cards = Object.entries(old || {}).filter(([k,v]) => k.startsWith('srs:') && v[0]);
-              oldTest = cards.length > 0 && cards.every(([,v]) => String(v[0].life || '').startsWith('local-test-')) &&
-                Object.keys(old).every(k => /^(srs:|learn:|drill:|log:|evening:|browse:|set:)/.test(k));
-            } catch {}
-            if (localStorage.getItem('lx:sync:cfg') || (previousDoc && !localStorage.getItem('lx:local-test:owned') && !oldTest)) {
-              document.body.textContent = '此测试地址已有非本工具创建的数据或云同步配置，已停止以避免覆盖。请使用未使用过的浏览器配置运行测试。';
+            if (localStorage.getItem('lx:local-test:sync:cfg')) {
+              document.body.textContent = '测试专用存储中存在云同步配置，已停止初始化。';
               throw new Error('测试地址存在已有数据');
             }
-            localStorage.setItem('lx:local-test:owned', '1'); localStorage.setItem('lx:sync:doc', JSON.stringify(doc));
+            localStorage.setItem('lx:local-test:sync:doc', JSON.stringify(doc));
             location.replace('/' + ''' + destination + ''');</script>''')
             return
         super().do_GET()
