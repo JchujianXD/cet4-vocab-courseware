@@ -15,12 +15,12 @@ loadKnown();
 const VOICE_NAMES = {ava: "Ava", andrew: "Andrew", sonia: "Sonia", ryan: "Ryan"};
 const VOICE_DESC = {ava: "美式 · 女声", andrew: "美式 · 男声", sonia: "英式 · 女声", ryan: "英式 · 男声"};
 const DEFAULTS = {voice: "ava", rate: 1, mask: false, hideKnown: false, scope: "group", withZh: true, loop: false, theme: "auto",
-  examDate: "2026-12-12", dailyCap: 80, autoSay: true, drillOrder: "course", drillMode: "quiz", phLine: true, videoPrefer: "精讲带背", videoWebfull: true,
+  examDate: "2026-12-12", dailyCap: 50, dailyMinutes: 20, autoSay: true, drillOrder: "course", drillMode: "quiz", phLine: true, videoPrefer: "精讲带背", videoWebfull: true,
   /* 学习新词、复习（study.js 用，默认值 = 加设置之前的行为）：learnStages 每个新词过几关（1 看词选义 / 2 + 听音选义 / 3 + 拼写）；
      learnSize 一次学多少（1 / 2 群，15 = 至少 15 词）；autoEx 学新词词卡读完单词接着读例句；autoNext 答对（记得）后 1.5 秒自动下一题；
      slowMode 想得久算模糊（loose ×1.5 / std / strict ×0.75 / off 不按时间）；quizListen、quizSpell 出不出听音、拼写题；roundSize 今天到期每轮最多几个（0 = 不限） */
   learnStages: 2, learnSize: 1, autoEx: false, autoNext: false, slowMode: "std", quizListen: true, quizSpell: true, roundSize: 25, practiceType: "meaning"};
-const NUM_SETS = ["rate", "dailyCap", "learnStages", "learnSize", "roundSize"];   // 设置页按钮上的值是字符串，这几个存成数字
+const NUM_SETS = ["rate", "dailyCap", "dailyMinutes", "learnStages", "learnSize", "roundSize"];   // 设置页按钮上的值是字符串，这几个存成数字
 const S = {...DEFAULTS};
 const loadSettings = () => Object.assign(S, DEFAULTS, Object.fromEntries(Sync.entries("set:")));
 function setS(k, v) {
@@ -788,14 +788,16 @@ function renderSettings() {
     </section>
     <section class="panel"><h2>复习</h2>
       <div class="row"><span><b>考试日期</b><small>首页倒计时用</small></span><input type="date" data-set="examDate" value="${esc(S.examDate)}"></div>
-      <div class="row"><span><b>每天复习上限</b><small>昨天学的等必做的词不算在内；其余到期的超过这个数，间隔短的先做，多出来的排到后面几天</small></span>
-        ${seg("dailyCap", [[60, "60"], [80, "80"], [120, "120"], [200, "200"]])}</div>
-      <div class="row"><span><b>「今天到期」每轮最多</b><small>一轮做完可以再来一轮；必做的词先出、不受每天复习上限，其余仍受上限约束</small></span>
+      <div class="row"><span><b>每日主任务上限</b><small>到期、遗忘重学和旧词校准共同计入；再按时间预算和近期表现减少推荐量。调整从下一学习日生效</small></span>
+        ${seg("dailyCap", [[25, "25"], [50, "50"], [60, "60"], [80, "80"], [120, "120"], [200, "200"]])}</div>
+      <div class="row"><span><b>每日时间预算</b><small>含主任务和最多 5 次同日补测；按预计用时推荐词数，不会计时催促。下一学习日生效</small></span>
+        ${seg("dailyMinutes", [[10, "10 分钟"], [20, "20 分钟"], [30, "30 分钟"]])}</div>
+      <div class="row"><span><b>今日学习每轮最多</b><small>分轮做完固定的今日计划；中途退出后可以继续，不额外添加积压词</small></span>
         ${seg("roundSize", [[15, "15"], [25, "25"], [40, "40"], [0, "不限"]])}</div>
-      <div class="row"><span><b>日常词义复习</b><small>早上和晚间固定为逐层提示的主动回忆，不按答题速度判忘记。自由抽查可单独选择词义、选择识别、听音、拼写或语境；专项成绩不改变词义等级。原出题方式设置仍保存在记录中。</small></span></div>
-      <div class="row"><span><b>抽查顺序</b><small>自由抽查用（「今天到期」固定按熟练度排，「学习新词」按书顺序）。巩固页上的同一个开关</small></span>
+      <div class="row"><span><b>日常词义复习</b><small>今日学习随时可做，使用原词卡的主动回忆，不按答题速度判忘记；没有强制晚间任务。自由抽查可单独选择词义、选择识别、听音、拼写或语境；专项成绩不改变词义等级。原出题方式设置仍保存在记录中。</small></span></div>
+      <div class="row"><span><b>抽查顺序</b><small>自由抽查用（「今日学习」按统一计划排，「学习新词」按书顺序）。巩固页上的同一个开关</small></span>
         ${seg("drillOrder", [["course", "课件顺序"], ["alpha", "字母顺序"], ["freq", "重要性"], ["random", "随机"]])}</div>
-      ${sw("autoSay", "自动读单词", "用于新学词卡和选择题；主动回忆不自动读音，手动播放计为提示。听音、拼写题总会读")}
+      ${sw("autoSay", "自动读单词", "用于新学词卡和选择题；主动回忆会读当前词，手动读音不计提示。听音、拼写题总会读")}
       ${sw("autoNext", "答对后自动下一题", "选择题、拼写题判「记得」时停 1.5 秒自动进下一题，期间按任意键或点页面就停在这张卡；模糊、答错仍等你按「继续」")}
       <div class="row"><span><b>想得久算模糊</b><small>选择题答对但超过时限记为模糊（标准：看词选义、听音 8 秒，看义选词 10 秒，例句 15 秒）；关掉就只看对错。翻卡自评不受影响</small></span>
         ${seg("slowMode", [["loose", "宽松"], ["std", "标准"], ["strict", "严格"], ["off", "关掉"]])}</div>

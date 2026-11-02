@@ -10,7 +10,7 @@
    导入按键前缀分类，可勾选类别：
      已会 known: / 设置 set: / 学习记录和复习卡 learn: srs: log:（三者绑在一起，拆开会对不上）/ 生词本 vocab: /
      阅读位置 last、lw:、pos: / 界面状态 vpGeo、peekTab、listFold、listHide、sideOff、learnPeek / 其他（认不出的键，以后新增的）
-     drill:（练习断点）并入学习记录，只恢复同一学习日的有效断点；晚间任务 evening: 也在学习记录中。
+     drill:（练习断点）并入学习记录，只恢复同一学习日的有效断点；晚间任务 evening:、每日计划 plan:、分词完成 task: 和迁移阶段 migration: 也在学习记录中。
    两种方式：
      merge 合并 = 每个键取时间较新的（规则同 sync.js 的 merge），永远不会把本机更新的记录改回去
      overwrite 覆盖 = 勾选类别里文件有的键写入文件的值、时间记 now；文件里没有、本机有的：
@@ -22,7 +22,7 @@ const Backup = (() => {
   const CATS = [
     {id: "known", name: "已会", prefixes: ["known:"], tomb: true},
     {id: "set", name: "设置", prefixes: ["set:"]},
-    {id: "study", name: "学习记录和复习卡", prefixes: ["learn:", "srs:", "log:", "evening:", "browse:", "drill:"], tomb: true},
+    {id: "study", name: "学习记录和复习卡", prefixes: ["learn:", "srs:", "log:", "evening:", "browse:", "drill:", "plan:", "task:", "migration:"], tomb: true},
     {id: "vocab", name: "生词本", prefixes: ["vocab:"], tomb: true},
     {id: "pos", name: "阅读位置", keys: ["last"], prefixes: ["lw:", "pos:"]},
     {id: "ui", name: "界面状态", keys: ["vpGeo", "peekTab", "listFold", "listHide", "sideOff", "learnPeek"]},
@@ -56,8 +56,12 @@ const Backup = (() => {
       if (!on.has(catOf(k))) continue;
       if (k.startsWith("drill:") && p[0] && p[0].d !== (rules ? rules.today(now) : day(now))) continue;
       const l = localDoc[k];
-      if (mode === "merge") { const q = [p[0], Math.min(p[1], now)]; if (!l || newer(q, l)) out.push([k, q]); }   // 将来的时间夹到 now，免得这个键在所有设备上永远赢
-      else out.push([k, [p[0], now]]);   // 覆盖：值相同也写 now，不然云端更新的另一个值同步回来会把它盖掉
+      if (mode === "merge") {
+        const q = [p[0], Math.min(p[1], now)]; // 将来的时间夹到 now
+        const merged = rules ? rules.mergeStudyRecord(k, l, q) : !l || newer(q, l) ? q : l;
+        if (!l || !same(l, merged)) out.push([k, merged]);
+      }
+      else out.push([k, [p[0] && /^(plan|task):/.test(k) ? {...p[0], reset: now} : p[0], now]]); // 显式覆盖新任务记录时开启新恢复批次，旧云端词单不能反盖
     }
     if (mode === "overwrite") for (const [k, l] of Object.entries(localDoc)) {
       if (k in fileDoc) continue;
@@ -85,7 +89,7 @@ const Backup = (() => {
     "srs:<词>": "复习卡：a 学习日、s 已过几站、d 下次复习日、l 忘过几次、r 最近一次结果（g 记得 / m 模糊 / f 忘了）、n 复习次数、"
       + "v 记进熟练度的次数、t 最近复习日、h 最近 6 次第一遍结果、q 答对过的最难题型（0 看词选义 / 1 听音 / 2 例句或看义选词 / 3 拼写）、"
       + "z 斩、p 学新整群过关的日期、cf 易混词、k 课id、g 词群号、f 火苗、o 词条序号；life 卡片生命周期；recall 新回忆等级与跨天证据（不追认旧选择成绩）；skills 分专项成绩；attempts 已计分标识",
-    "log:<日期>": "当天评分次数 g / m / f（含旧版评分）、dv 当天复习的到期词数、mv 当天做的必做数；recall 独立/费劲/提示/失败的新回忆计数；tasks 按早上/晚间/自由回忆分记；skills 专项计数",
+    "log:<日期>": "当天评分次数 g / m / f（含旧版评分）、dv 当天复习的到期词数、mv 当天做的必做数；recall 独立/费劲/提示/失败的新回忆计数；tasks 按今日复习/旧晚间/自由回忆分记；skills 专项计数；dailyBase 保留新调度前当日计数基线",
     "vocab:<原形>": "生词本：w 原形、x 点到的写法、m 释义、p 音标、k 出处课、e 出处词条、at 加入日期、o 加入时刻、bk 书中位置、ph 例句词组，另带复习卡字段",
     "known:<词>": "1 已会",
     "set:<名字>": "设置",
@@ -95,6 +99,9 @@ const Backup = (() => {
     "drill:<范围>": "练习断点，只恢复同一学习日且对应卡片/词群仍有效的进度；rc 含提示、首次表现、有限补测及任务标识",
     "evening:<日期>": "晚间独立任务：items 按卡片生命周期保存结果，finished 完成，skipped 跳过；不以白天答题日判断完成",
     "browse:<日期>": "途中浏览记录，不计回忆成功",
+    "plan:<日期>": "当日固定推荐词单：items 含单词、生命周期和任务类别；budget 含张数、预计用时及补测预留，credited 为升级前当日已做量；reset 为显式覆盖恢复批次",
+    "task:<日期>:<生命周期>": "同一词当天的首次回忆与补测，按生命周期去重；不覆盖首次评分，不重新推进 SRS",
+    "migration:state": "记忆校准阶段与旧词生命周期清单，退出只改变模式，不重置卡片",
   };
   const HOWTO = "设置页 → 数据 → 导入…，选这个文件；导入时只读 app、v、d，这段说明会被忽略。"
     + "d 里每条是 [值, 修改时间（毫秒）]；已会、学习记录和复习卡、生词本里值为 0 表示已删除（合并时靠它把删除同步过去），设置里的 0 就是 0。";

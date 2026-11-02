@@ -14,7 +14,7 @@ const courseClicks = app.slice(app.indexOf('document.addEventListener("click", e
 function harness(hash = "#/drill/due", saved = {}) {
   const data = new Map(Object.entries(copy(saved))), plays = [], speech = [], listeners = new Map();
   const ids = new Map(), handlers = {};
-  let generation = 0;
+  let generation = 0, studyDay = day;
   const view = {
     _html: "", get innerHTML() { return this._html; }, set innerHTML(html) { this._html = html; generation++; },
     querySelectorAll: () => [], querySelector: () => null,
@@ -40,14 +40,14 @@ function harness(hash = "#/drill/due", saved = {}) {
     data.set(`learn:${lid}:g${group.no}`, day);
   }
   const context = vm.createContext({
-    SRS: {...SRS, today: () => day}, Recall, Video, Sync, URLSearchParams, setTimeout, clearTimeout,
+    SRS: {...SRS, today: () => studyDay}, Recall, Video, Sync, URLSearchParams, setTimeout, clearTimeout,
     location: {hash}, document: {title: "测试", addEventListener(type, fn, capture) {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type).push({fn, capture: !!capture});
     }},
     $, $$: () => [], known: new Set(), pop: {style: {}, contains: () => false},
     BOOK: json("data/book.json"), store: {get: (key, fallback) => fallback},
-    S: {examDate: "2026-12-12", voice: "ava", rate: 1, roundSize: 25, dailyCap: 80, quizListen: true, quizSpell: true, autoSay: false, autoEx: false},
+    S: {examDate: "2026-12-12", voice: "ava", rate: 1, roundSize: 25, dailyCap: Sync.get("set:dailyCap",80), dailyMinutes: Sync.get("set:dailyMinutes",20), quizListen: true, quizSpell: true, autoSay: false, autoEx: false},
     fetchJSON: async file => json(file),
     esc: text => String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"),
     plainMean: text => text.replace(/<[^>]*>/g, ""), meanHTML: text => text,
@@ -62,6 +62,8 @@ function harness(hash = "#/drill/due", saved = {}) {
   vm.runInContext(courseClicks, context);
   const h = {
     data, plays, speech, context,
+    setDay: d => studyDay = d,
+    async navigate(hash) { context.location.hash = hash; await context.Study.render(hash); await new Promise(setImmediate); return h; },
     get html() { return view.innerHTML; },
     word: () => view.innerHTML.match(/class="dword"[^>]*>([^<]+)</)?.[1],
     progress: () => data.get("drill:" + (hash.includes("practice=") ? `practice:${hash.split("practice=")[1]}:${hash.split("/")[2].split("?")[0]}` : hash.split("/")[2]))?.rc,
@@ -73,6 +75,7 @@ function harness(hash = "#/drill/due", saved = {}) {
         closest(selector) {
           if (selector === "#studyView a[data-vi]") return video && born === generation ? target : null;
           for (const part of selector.split(",")) {
+            if (part.startsWith("#") && dataset.id === part.slice(1)) return target;
             if (part === ".study" && born === generation) return view;
             const attr = part.match(/^\[data-([\w-]+)\]$/)?.[1]?.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
             if (attr && attr in dataset) return target;
@@ -168,4 +171,71 @@ test("新学和独立听音、拼写、看义选词不受回忆卡修复影响�
     else if (hash.includes("spell")) assert.match(h.html, /id="spell"/);
     else assert.match(h.html, /class="qopts"/);
   }
+});
+
+
+test("今日计划跨轮固定，补测只计实际负担，刷新与自由练习不重复正式评分", async () => {
+  let h = await harness("#/drill/due", {"set:dailyCap":2}).render();
+  const plan=h.data.get("plan:"+day), first=h.word();
+  h.click({recallReveal:"1"}); h.click({recallRate:"failed"});
+  assert.equal(h.data.get("log:"+day).f,1);
+  h=await harness("#/drill/due",Object.fromEntries(h.data)).render();
+  let n=0;
+  while(h.word() && n++<10) {h.click({recallReveal:"1"});h.click({recallRate:"independent"});}
+  assert.ok(n<10); assert.match(h.html,/今日计划已完成/);
+  assert.equal(h.data.get("log:"+day).f,1); assert.equal(h.data.get("log:"+day).g,1);
+  const saved=h.data.get("srs:"+first); assert.equal(saved.recall.result,"failed"); assert.equal(saved.s,0);
+  assert.equal(h.data.get(SRS.taskKey(day,saved.life)).retry.result,"independent");
+  await h.navigate("#/"); assert.match(h.html,/今日计划已完成/); assert.doesNotMatch(h.html,/晚间巩固|早上复习|途中看/);
+  assert.deepEqual(h.data.get("plan:"+day),plan);
+  const log=copy(h.data.get("log:"+day));
+  h=await harness("#/drill/all?practice=meaning",Object.fromEntries(h.data)).render();
+  for(let i=0;i<2;i++){h.click({recallReveal:"1"});h.click({recallRate:"independent"});}
+  assert.deepEqual(h.data.get("log:"+day),log);
+  assert.equal(h.data.get("srs:"+first).recall.result,"failed");
+});
+test("日限额包含未做首次复习的词，完成不会被剩余积压或新词改成未完成", async () => {
+  const saved={}, lesson=json('data/lessons/u07-l01.json');
+  for(const g of lesson.groups)for(const e of g.entries)saved['srs:'+e.word]={...SRS.freshCard(yesterday,e.word),k:lesson.id,g:g.no,o:e.no,f:e.freq};
+  saved['set:dailyCap']=3;
+  const h=await harness('#/',saved).render();h.context.S.dailyCap=80;
+  // 首页已经生成的当日计划固定，修改设置不会临时换词或增量。
+  const p=copy(h.data.get('plan:'+day)); await h.navigate('#/');assert.deepEqual(h.data.get('plan:'+day),p);
+  assert.ok(p.items.length<=50);assert.ok(p.items.length< Object.keys(saved).length);
+  await h.navigate('#/drill/due');
+  let count=0;
+  while(count++<80){
+    if(h.word()){h.click({recallReveal:'1'});h.click({recallRate:'independent'});}
+    else if(h.html.includes('id="nextRound"')){h.click({id:'nextRound'});await new Promise(setImmediate);}
+    else break;
+  }
+  assert.ok(count<80);await h.navigate('#/');assert.match(h.html,/今日计划已完成/);assert.match(h.html,/今天可以安心结束/);
+  assert.ok([...h.data].filter(([k,c])=>k.startsWith('srs:')&&c.d<=day).length>0);
+});
+test("跨凌晨四点评分不会写入错误学习日，显示返回首页提示", async () => {
+  const h=await harness().render();h.click({recallReveal:'1'});h.setDay(SRS.add(day,1));h.click({recallRate:'independent'});
+  assert.match(h.html,/已进入新的学习日/);assert.equal(h.data.get('log:'+day),undefined);assert.equal(h.data.get('log:'+SRS.add(day,1)),undefined);
+});
+test("旧晚间记录保留兼容，但不作为首页完成条件；已达到条件可退出迁移", async () => {
+  const night={finished:true,items:{old:{word:'old',first:'independent'}}};
+  const saved={['evening:'+yesterday]:night};
+  let h=await harness('#/',saved).render();assert.deepEqual(h.data.get('evening:'+yesterday),night);
+  assert.doesNotMatch(h.html,/晚间巩固|今天跳过/);
+  const cohort=['specific','dose'].map(w=>({word:w,life:h.data.get('srs:'+w).life}));
+  for(const w of ['specific','dose'])h.data.set('srs:'+w,SRS.rateRecall(h.data.get('srs:'+w),'independent',day,{id:w}));
+  h.data.set('migration:state',{v:1,mode:'active',started:yesterday,cohort});
+  await h.navigate('#/');assert.match(h.html,/data-migration-exit/);h.click({migrationExit:'1'});
+  assert.equal(h.data.get('migration:state').mode,'normal');assert.doesNotMatch(h.html,/data-migration-exit|旧词已校准/);
+  assert.deepEqual(h.data.get('evening:'+yesterday),night);
+});
+
+test('同步另一份词单已完成的主任务抵扣推荐量，外部未完成补测能继续而不重复计分', async () => {
+  const dose={...SRS.freshCard(yesterday,'dose'),k:'u08-l01',g:1,o:1,f:1};
+  const graded=SRS.rateRecall(dose,'failed',day,{id:SRS.dailyAttempt(day,dose.life),at:100});
+  const saved={['srs:dose']:graded,['plan:'+day]:{v:1,d:day,id:'canonical',created:1,credited:0,items:[{word:'specific',life:'specific|0',kind:'review'}],budget:{limit:1,cap:1,minutes:20,seconds:20,retryLimit:5}},
+    [SRS.taskKey(day,dose.life)]:{d:day,word:'dose',life:dose.life,first:{result:'failed',planned:true,at:100},retryWanted:true}};
+  const h=await harness('#/drill/due',saved).render();assert.equal(h.word(),'dose');assert.equal(h.progress().current.retry,true);
+  h.click({recallReveal:'1'});h.click({recallRate:'independent'});
+  assert.match(h.html,/今日计划已完成/);assert.equal(h.data.get('srs:dose').recall.result,'failed');assert.equal(h.data.get('log:'+day),undefined);
+  await h.navigate('#/');assert.match(h.html,/今日计划已完成/);
 });

@@ -69,3 +69,36 @@ test("真实只读样本：289 张有效卡，21/197/71；每张日期、原记�
   assert.deepEqual(B.plan(upgraded, file.d, B.CATS.map(c => c.id), "merge", Date.now()), []);
   assert.equal(crypto.createHash("sha256").update(fs.readFileSync(sample)).digest("hex"), hash);
 });
+
+test('两台设备离线答同一词：首次事件、卡片排期和日志收敛，额外专项与原时间保留', async () => {
+  const day='2026-11-02', base=S.freshCard('2026-11-01','shared'), id=S.dailyAttempt(day,base.life);
+  function device(result,at,stamp) {
+    const card=S.rateRecall(base,result,day,{id,at}), schedule={...Object.fromEntries(Object.entries(card).filter(([k])=>['a','s','d','l','r','n','t','h','v','z'].includes(k))),recall:{level:card.recall.level,days:card.recall.days,day:card.recall.day,result:card.recall.result}};
+    return {'srs:word':[S.rateSkill(card,'spell','g',day,{id:'skill-'+at}),stamp],
+      [S.taskKey(day,base.life)]:[{d:day,life:base.life,word:'word',first:{result,at,due:true,must:true,counted:true,task:'due',hints:[],schedule},retryWanted:result==='failed'},stamp],
+      ['log:'+day]:[{g:4,m:0,f:0,dv:4,mv:0,dailyBase:{g:4,m:0,f:0,dv:4,mv:0,recall:{},tasks:{}}},stamp]};
+  }
+  const A=device('failed',100,150), B=device('independent',200,250);
+  for(const [local,remote] of [[A,B],[B,A]]) {
+    const h=syncHarness(local,remote);await h.sync.start();
+    const c=h.sync.get('srs:word'), first=h.sync.get(S.taskKey(day,base.life)).first, lg=h.sync.get('log:'+day);
+    assert.equal(first.result,'failed');assert.equal(c.recall.result,'failed');assert.equal(c.r,'f');assert.equal(c.s,0);assert.equal(c.d,'2026-11-03');
+    assert.equal(lg.f,1);assert.equal(lg.g,4);assert.equal(lg.dv,5);assert.equal(c.skills.spell.g,1);
+    assert.equal(h.sync.dump()['srs:word'][1],250);
+    assert.deepEqual(plain(h.sync.dump()),plain(h.remote()));
+    assert.deepEqual(S.upgradeDoc(plain(h.sync.dump())),plain(h.sync.dump()));
+    const chopped=S.chop(c,day,'word');h.sync.set('srs:word',chopped);assert.equal(h.sync.get('srs:word').z,1);assert.equal(h.sync.get('srs:word').d,chopped.d);
+    const shifted=S.shift(c,3);h.sync.set('srs:word',shifted);assert.equal(h.sync.get('srs:word').d,shifted.d);
+  }
+});
+
+test('离线并发首次评分校正时保留评分后整体顺延，不覆盖用户后续日期调整', async () => {
+  const day='2026-11-02', c=S.freshCard('2026-11-01','shared-shift'), id=S.dailyAttempt(day,c.life);
+  const early=S.rateRecall(c,'failed',day,{id,at:100});
+  const late=S.rateRecall(c,'independent',day,{id,at:200}), shifted=S.shift(late,3);
+  const schedule={a:early.a,s:early.s,d:early.d,l:early.l,r:early.r,n:early.n,t:early.t,h:early.h,v:early.v,z:early.z,recall:{level:early.recall.level,days:early.recall.days,day:early.recall.day,result:early.recall.result}};
+  const h=syncHarness({'srs:word':[shifted,300]}, {[S.taskKey(day,c.life)]:[{d:day,life:c.life,word:'word',first:{result:'failed',at:100,due:true,schedule}},100]});
+  await h.sync.start();const saved=h.sync.get('srs:word');
+  assert.equal(saved.recall.result,'failed');assert.equal(saved.a,S.add(early.a,3));assert.equal(saved.d,S.add(early.d,3));
+  assert.equal(h.sync.dump()['srs:word'][1],300);assert.deepEqual(S.upgradeDoc(h.sync.dump()),plain(h.sync.dump()));
+});

@@ -6,7 +6,8 @@
      srs:<词> = {a 学习日, s 已过站数, d 到期日, l 忘记次数, r 最近评分, n 复习次数, v 记进熟练度的次数, t 最近复习日,
                 h 最近 6 次第一遍结果, q 答对过的最难题型, z 斩, p 学习新词整群过关的日期（手动勾的词群没有）, cf 易混词,
                 k 课id, g 词群号, f 火苗, o 词条序号, life 生命周期, recall 新回忆等级/跨天证据/首次结果, skills 各专项成绩, attempts 已计分标识}（取消记 0）
-     log:<日期> = {g, m, f 当天评分次数, dv 当天复习的到期词数, mv 其中必做的词数（还没做过第一次复习的，见 SRS.isMust；每天上限只扣 dv − mv）, recall 新回忆计数, tasks 分早上/晚间/自由回忆, skills 专项计数}
+     log:<日期> = {g, m, f 当天评分次数, dv 当天复习的到期词数, mv 其中首次复习的词数（保留历史统计，不再豁免每日预算）, recall 新回忆计数, tasks 分今日复习/旧晚间/自由回忆, skills 专项计数, dailyBase 新调度前当日计数基线}
+     plan:<日期> = 当日固定词单与预算；task:<日期>:<life> = 首次及补测；migration:state = 校准阶段与旧卡清单
      evening:<日期> = 晚间独立任务（items 按卡片 life 保存首次及补测，finished 完成，skipped 跳过）；browse:<日期> = 被动浏览
      drill:<范围> = 巩固做到一半的进度（同一天有效，做完记 0），字段见 progSave
      set:<名字> = 设置（app.js 的 DEFAULTS）；这里用到学习新词、复习的几项：learnStages learnSize autoSay autoEx autoNext slowMode quizListen quizSpell roundSize drillMode drillOrder practiceType
@@ -126,30 +127,44 @@ const Study = (() => {
     const ok = new Set(learnMarks().filter(([, d]) => d >= from && d <= to).map(([k]) => k));
     return liveCards().filter(x => (x.vocab ? x.card.at >= from && x.card.at <= to : ok.has(`${x.card.k}:g${x.card.g}`)));
   }
-  const cap = () => +S.dailyCap || 80;
-  /* 设置：今天到期每轮最多几个（0 = 不限）；关掉的题型（出题、算熟练度都按它，见 srs.js）；想得久算模糊的时限倍数 */
+  const cap = () => +S.dailyCap || 50;
   const roundN = () => +S.roundSize || Infinity;
   const offTypes = () => [...(S.quizListen ? [] : [SRS.TYPE.LISTEN]), ...(S.quizSpell ? [] : [SRS.TYPE.SPELL])];
   const lvOpt = () => ({off: offTypes()});
   const SLOW_K = {loose: 1.5, std: 1, strict: 0.75, off: 0};
-  /* 每天上限只管必做以外的：必做（还没做过第一次复习的）不占上限 */
-  const capLeft = () => { const lg = logOf(T()); return Math.max(0, cap() - ((lg.dv || 0) - (lg.mv || 0))); };
+  const planKey = () => "plan:" + T();
+  const taskRecord = (life, day = T()) => Sync.get(SRS.taskKey(day, life), 0) || {};
+  const recallSchedule = c => ({...Object.fromEntries(Object.entries(c).filter(([k]) => ["a", "s", "d", "l", "r", "n", "t", "h", "v", "z"].includes(k))),
+    recall: Object.fromEntries(Object.entries(c.recall).filter(([k]) => ["level", "days", "day", "result"].includes(k)))});
+  function memoryState() {
+    const old = Sync.get("migration:state", 0), state = SRS.migrationState(liveCards(), T(), old);
+    if (state !== old) Sync.set("migration:state", state);
+    return state;
+  }
+  function dailyPlan() {
+    let p = Sync.get(planKey(), 0);
+    if (!p || p.v !== 1 || p.d !== T() || !Array.isArray(p.items) || !Number.isFinite(p.budget?.limit)) {
+      memoryState();
+      p = SRS.makeDailyPlan(liveCards(), T(), {cap: cap(), minutes: S.dailyMinutes, id: newId(), created: Date.now(), credited: logOf(T()).dv || 0});
+      Sync.set(planKey(), p);
+    }
+    return p;
+  }
+  function planStatus() {
+    const p = dailyPlan(), records = Object.fromEntries(Sync.entries("task:" + T() + ":").filter(([, r]) => r?.life).map(([, r]) => [r.life, r]));
+    return {...SRS.dailyStatus(p, liveCards(), records), plan: p};
+  }
+  const capLeft = () => Math.max(0, dailyPlan().budget.limit - planStatus().completed);
   const dueAll = () => SRS.dueList(liveCards(), T());
-  /* 今天的复习：must 必做、rest 其余（都按 dueList 排，rest 里第一个拖得最久）；L 今天的总复习量（还到期的 + 今天已做的到期复习），tier 档位（SRS.loadTier） */
   function dueStat() {
-    const t = T(), due = dueAll(), lg = logOf(t), must = [], rest = [];
-    for (const x of due) (SRS.isMust(x.card, t) ? must : rest).push(x);
+    const due = dueAll(), must = due.filter(x => SRS.isMust(x.card, T())), lg = logOf(T());
     const L = due.length + (lg.dv || 0);
-    return {due, must, rest, lg, L, tier: SRS.loadTier(L, cap())};
+    return {due, must, rest: due.filter(x => !SRS.isMust(x.card, T())), lg, L, tier: SRS.loadTier(L, dailyPlan().budget.limit)};
   }
-  /* 「今天到期」下一轮：还有必做时只出必做（每轮数照常截断），必做清完才出其余的（每轮数、剩余上限截断）；queue 已把必做排在最前 */
-  function dueRound() {
-    const t = T(), q = SRS.queue(liveCards(), t, t, lvOpt()), must = q.filter(x => SRS.isMust(x.card, t));
-    return must.length ? must.slice(0, roundN()) : q.slice(0, Math.min(roundN(), capLeft()));
-  }
-  const dueRoundN = ({must, rest}) => (must.length ? Math.min(must.length, roundN()) : Math.min(rest.length, capLeft(), roundN()));
-  const dueTodo = ({must, rest}) => must.length + Math.min(rest.length, capLeft());   // 今天还能做的：必做全部 + 其余到上限为止
-  /* 「还想多做」（#/drill/more）：今天的任务做完后，再从其余到期的里按 queue 的顺序取 MORE_N 个；照常评分、推进复习计划（也记进 dv） */
+  const dueRound = () => planStatus().rows.filter(x => !x.done || x.pendingRetry).slice(0, roundN()).map(x => x.x).filter(Boolean);
+  const dueRoundN = () => Math.min(planStatus().todo, roundN());
+  const dueTodo = () => planStatus().todo;
+  // 额外复习是自由选择，不追加到今日推荐计划。
   const MORE_N = 25;
   const moreRound = () => { const t = T(); return SRS.queue(liveCards(), t, t, lvOpt()).filter(x => !SRS.isMust(x.card, t)).slice(0, MORE_N); };
   const isRound = sc => sc === "due" || sc === "more";   // 按到期复习一轮轮出的范围：词单按 queue 排、接着做只认进度里的词单、结束页按类型统计
@@ -159,7 +174,7 @@ const Study = (() => {
   function scopeInfo(sc) {
     const t = T(), mon = SRS.monday(t);
     let m;
-    if (sc === "due") return {title: "今天到期", items: dueRound};
+    if (sc === "due") return {title: "今日学习", items: dueRound};
     if (sc === "more") return {title: "多做几个", items: moreRound};
     if (sc === "learn") return {title: "学习新词", items: () => []};   // 取词见 learnItems
     if (sc === "today") return {title: "今天学的", items: () => inLearnRange(t, t)};
@@ -359,90 +374,38 @@ const Study = (() => {
         <small>${esc(S.examDate)} · 今天 ${md(t)} 周${WEEK[SRS.dow(t)]}</small></div>
       ${n ? `<div class="streak" title="连续学习天数">🔥 连续 ${n} 天</div>` : ""}</div>`;
   }
-  /* 今天的复习安排（首页「今天」卡片和下面的积压提示框共用）：dueStat 的必做 / 其余、总量 L、档位（SRS.loadTier），
-     mT / rT 今天的必做 / 其余总数（已做的 + 还剩的，加起来是 L），oDone 其余今天已做的，over 拖过期的、oldest 最早拖了几天；
-     今天的任务 = 必做全部 + 其余做到每天上限：todo 还差几个，later 排到明天以后的，finished 做完了（这一轮做到一半不算） */
-  function todayPlan() {
-    const t = T(), ds = dueStat(), {must, rest, lg} = ds, left = capLeft();
-    const mT = must.length + (lg.mv || 0), rT = rest.length + Math.max(0, (lg.dv || 0) - (lg.mv || 0));
-    const over = rest.filter(x => x.card.d < t), oldest = over.length ? SRS.diff(t, over[0].card.d) : 0;
-    const todo = must.length + Math.min(rest.length, left), later = rest.length - Math.min(rest.length, left);
-    return {...ds, t, left, mT, rT, oDone: rT - rest.length, over, oldest, todo, later, finished: !todo && !progGet("due")};
-  }
-  /* 首页「今天」卡片四步：早上复习（必做 / 到期积压两行）、学新（档位高时少学）、途中看、睡前巩固；今天怎么安排写在下面的积压提示框 */
   function modToday() {
-    const t = T(), weekend = SRS.dow(t) === 0;   // 周日：途中看换成看本周学的词
-    const {must, rest, L, tier, left, mT, rT, oDone, oldest, finished} = todayPlan();
-    const todays = inLearnRange(t, t), groups = learnMarks().filter(([, d]) => d === t).length;
-    const nv = todays.filter(x => x.vocab).length, nb = todays.length - nv, plusV = nv ? ` + 生词 ${nv} 个` : "";
-    const ready = BOOK.parts.flatMap(p => p.units.flatMap(u => u.lessons)).filter(l => l.ready);
-    // 「继续」去上次读的课；在别处学完勾掉的词群已经排到后面一课时，去下一个没勾的词群那课（进去后的定位见 app.js 的 cont）
-    const rd = ready.some(l => l.id === store.get("last")) ? store.get("last") : ready[0] && ready[0].id, nx = nextGroups(1)[0];
-    const last = nx && learnMarks().length && ready.findIndex(l => l.id === nx.lid) > ready.findIndex(l => l.id === rd) ? nx.lid : rd, lastL = last && last.match(/u(\d+)-l(\d+)/);
-    const night = Recall.nightStats(todays, nightRecord()), nightDone = night.finished;
-    const go = (sc, label) => (progGet(sc) ? "接着做" : label);   // 今天做到一半的范围
-    const dueHalf = !!progGet("due");                // 这一轮做到一半：答错的已排到明天、到期数可能清零了，还要能接着做
-    const nxn = nx && counts.get(nx.key), batch = nx && nextBatch();   // batch：一次学多群时的「下一批」
-    const step = (done, n, title, desc, action, extra) => `<li class="${done ? "done" : ""}"><span class="dot">${done ? "✓" : n}</span>
-      <div class="sd"><b>${title}</b>${[].concat(desc).map(d => `<small>${d}</small>`).join("")}</div>${action || ""}${extra || ""}</li>`;
-    // 早上复习：必做（还没做过第一次复习的）不占每天上限、先出完；到期 / 积压按每天上限做，按钮都进 #/drill/due
-    const ok = s => `<span class="ck">✓ ${s}</span>`, perRound = n => (n > roundN() ? ` · 每轮 ${roundN()} 个` : "");
-    const mustLine = must.length ? `<b class="rk">必做 · ${must.length} 个</b>${perRound(must.length)}` : ok(`必做 · ${mT ? `${mT} 个做完了` : "今天没有"}`);
-    const restLine = !rest.length ? ok(`到期 / 积压 · ${rT ? `${rT} 个做完了` : "今天没有"}`)
-      : `<b class="rk">到期 / 积压 · ${rest.length} 个</b>${oldest ? `（最早拖了 ${oldest} 天）` : ""}${!left ? ` · 今天已做满 ${cap()} 个，剩下的排到后面几天`
-        : `${rest.length > left ? ` · 今天先做 ${left} 个（上限 ${cap()}）` : ""}${must.length ? "" : perRound(Math.min(rest.length, left))}`}`;
-    const morning = logOf(t).tasks?.due, morningResult = morning ? `首次回忆：独立 ${(morning.independent || 0) + (morning.effort || 0)} · 提示 ${morning.hinted || 0} · 未想起 ${morning.failed || 0}` : "";
-    const doneLines = [ok(`今天的任务做完了：必做 ${mT} + 其余 ${oDone}`), ...(rest.length ? [`剩下 ${rest.length} 个已排到明天以后`] : []), ...(morningResult ? [morningResult] : [])];
-    const s1 = step(finished, 1, "早上复习",
-      !L ? "今天没有到期的词" : finished ? doneLines : [mustLine, restLine, ...(morningResult ? [morningResult] : [])],
-      must.length || (rest.length && left) || dueHalf ? btn("#/drill/due", go("due", "开始"), 'variant="brand"') : "");
-    // 学新：「学习新词」按书顺序一群一群学，学完自动记为今天学的；在电子书、视频里学完的在「学习记录」里勾上，学习新词就跳过它。
-    // 复习偏多：今天最多 1 群，学够了按钮换成不显眼的「仍要再学 1 群」；积压太多：今天先不学新词，「仍要学 1 群」点了照样能学（都按 1 群取词，见 learnN）
-    const learnHalf = !!progGet("learn"), stop = !learnHalf && (tier === "heavy" || (tier === "busy" && groups > 0));
-    const nextTxt = batch ? `下一批：${batch}` : nx ? `下一群：${lesTitle(nx.lid)} · 第 ${nx.no} 群 ${esc(nx.title)}<span class="qn" data-qn="${nx.key}">${nxn ? nxn + " 词" : ""}</span>` : "Part 01 的词群全部学完了";
-    const learnedTxt = groups ? `今天学了 ${groups} 个词群 · ${nb} 词${plusV}` : nv ? `今天加了生词 ${nv} 个` : "";
-    const s2desc = tier === "heavy" ? `今天先不学新词${learnedTxt ? `；${learnedTxt}` : ""}`
-      : tier === "busy" ? (groups ? `${learnedTxt}；复习偏多，今天学 1 群就够了` : `${learnedTxt ? learnedTxt + "；" : ""}复习偏多，今天最多 1 群 · ${nextTxt}`)
-      : `${learnedTxt ? learnedTxt + "；" : ""}${nextTxt}`;
-    const learnBtn = !nx ? "" : stop ? btn("#/drill/learn", groups ? "仍要再学 1 群" : "仍要学 1 群", 'appearance="outlined"') : btn("#/drill/learn", go("learn", "学习新词"), 'variant="brand"');
-    const learning = progGet("learn"), learnedProgress = learning ? ` · 本轮已过 ${learning.done?.length || 0} 个词，未完成词群将继续` : "";
-    const s2 = step(groups > 0 && !learnHalf, 2, "学新", s2desc + learnedProgress,
-      `<span class="acts">${lastL ? btn(`#/${last}/cont`, `继续 U${+lastL[1]} L${+lastL[2]}`) : ""}${btn("#/log", "📝 学习记录")}${learnBtn}</span>`);
-    const viewed = !!Sync.get("browse:" + t, 0);
-    const s3 = step(viewed, 3, "途中看", todays.length ? `今天 ${todays.length} 个词${viewed ? " · 已浏览（不计回忆成绩）" : " · 随时浏览，不计回忆成绩"}` : weekend ? "看看本周学的词" : "记录今天学的之后，这里能快速浏览",
-      todays.length ? btn("#/list/today", "浏览") : weekend ? btn("#/list/week", "浏览") : "");
-    const nrec = nightRecord(), activeNight = todays.map(x => nrec.items[x.card.life]).filter(Boolean);
-    const weak = activeNight.filter(r => ["hinted", "failed"].includes(r.first) && !Recall.independent(r.retry)).length;
-    const nightResult = activeNight.length ? ` · 独立 ${activeNight.filter(r => Recall.independent(r.first)).length} / 提示 ${activeNight.filter(r => r.first === "hinted").length} / 未想起 ${activeNight.filter(r => r.first === "failed").length}` : "";
-    const s4 = step(nightDone, 4, "晚间巩固", todays.length ? `${night.skipped ? "已跳过，可继续" : nightDone ? `任务完成${weak ? ` · 待加强 ${weak}` : ""}` : "主动回忆"} · 已做 ${night.done}/${night.total}${night.pending ? ` · 待做 ${night.pending}` : progGet("today") ? " · 待完成补测" : ""}${nightResult}` : "今天还没有新学的词",
-      todays.length ? `<span class="acts">${btn("#/drill/today", go("today", nightDone ? "查看结果" : "开始"), nightDone ? undefined : 'variant="brand"')}${!nightDone && !night.skipped ? '<button id="nightSkip">今天跳过</button>' : ""}</span>` : "");
-    return `<wa-card class="mod today"><div slot="header" class="mh"><b>今天</b><a href="#/drill">自由抽查 →</a></div>
-      <ol class="steps4">${s1}${s2}${s3}${s4}</ol></wa-card>`;
+    const status = planStatus(), {plan, total, completed, finished, pendingRetries, retries} = status;
+    const state = memoryState(), migration = SRS.migrationStatus(liveCards(), T(), state, plan.budget.limit);
+    const kinds = {review: "到期复习", relearn: "遗忘重学", calibrate: "旧词校准"};
+    const breakdown = Object.entries(kinds).map(([kind, label]) => {
+      const n = plan.items.filter(x => x.kind === kind).length;
+      return n ? `${label} ${n}` : "";
+    }).filter(Boolean).join(" · ");
+    const reason = !finished && !migration.active && dueStat().tier === "heavy" ? "今天先巩固旧词，新词不着急。" : "";
+    const retryText = pendingRetries ? ` · 还有 ${pendingRetries} 次同日补测` : retries ? ` · 已补测 ${retries} 次` : "";
+    const progress = `${completed}/${total} 词${retryText}`;
+    return `<wa-card class="mod today"><div slot="header" class="mh"><b>今日学习</b><span class="sub">${migration.active ? "旧词记忆校准" : "日常复习"}</span></div>
+      <ol class="steps4"><li class="${finished ? "done" : ""}"><span class="dot">${finished ? "✓" : "1"}</span>
+        <div class="sd"><b>${finished ? "今日计划已完成" : `今天推荐 ${total} 词`}</b><small>${progress}</small>
+          ${breakdown ? `<small>${breakdown}</small>` : ""}<small>${finished ? "今天可以安心结束，剩余词会自动安排。" : `预算 ${plan.budget.minutes} 分钟 · 可分次完成`}</small></div>
+        ${!finished ? btn("#/drill/due", progGet("due") || completed ? "继续学习" : "开始学习", 'variant="brand"') : ""}</li></ol>
+      ${reason ? `<p class="note">${reason}</p>` : ""}
+      ${migration.active ? `<p class="note">旧词已校准 ${migration.calibrated}/${migration.total} · ${migration.ready ? "可以恢复日常学习了。" : "先巩固旧词，新词自选。"}</p>${migration.ready ? `<div class="ops plan-actions"><wa-button size="small" data-migration-exit="1">恢复日常学习</wa-button></div>` : ""}` : ""}</wa-card>`;
   }
-  /* 积压提示框：复习偏多 / 积压太多（档位不是 easy），或连续 3 天没学、还有拖过期的才出现。
-     今天的任务（必做全部 + 其余做到上限）没做完：橙色框，写今天做多少、还差多少；积压太多或连续 3 天没学时带「请假顺延」。
-     做完了：绿色框，写做了多少、剩下的排到明天以后还要几天，带「还想多做」（#/drill/more，照常推进复习计划） */
-  function modBacklog() {
-    const {t, must, rest, over, oldest, L, tier, left, mT, rT, oDone, todo, later, finished} = todayPlan();
-    const la = lastActive(), gap = la ? SRS.diff(t, la) : 0;
-    const leave = tier === "heavy" || (gap >= 3 && (over.length || must.some(x => x.card.d < t)));
-    if (tier === "easy" && !leave) return "";
-    const fc = later ? SRS.forecast(liveCards().map(x => x.card), t, cap(), left) : 0;   // 第 1 天是今天，所以从明天算是再 fc − 1 天
-    const again = fc === 2 ? "预计明天清完" : isFinite(fc) ? `预计再 ${fc - 1} 天清完` : "短期内清不完，可以考虑请假顺延";
-    if (finished && tier !== "easy") {
-      const plan = tier === "heavy" ? "今天按计划不学新词，想学可以点「学新」里的「仍要学 1 群」。" : "学新今天最多 1 群。";
-      return `<wa-callout variant="success" class="mod"><b>✅ 今天的复习任务完成了</b>：做了 ${mT + oDone} 个（必做 ${mT} + 其余 ${oDone}）。
-        ${later ? `剩下 ${later} 个积压已排到明天以后，按每天 ${cap()} 个，${again}。` : "积压都清完了。"}${plan}
-        ${rest.length ? `<div class="ops">${btn("#/drill/more", progGet("more") ? "接着多做" : `还想多做 ${Math.min(MORE_N, rest.length)} 个`, 'appearance="outlined"')}</div>` : ""}</wa-callout>`;
-    }
-    const oTask = Math.min(rT, cap()), lack = [must.length ? `必做 ${must.length} 个` : "", todo - must.length ? `其余 ${todo - must.length} 个` : ""].filter(Boolean).join("、");
-    const head = tier === "heavy" ? `<b>积压太多：到期 ${L} 个，今天做 ${mT + oTask} 个</b>（必做 ${mT} 全做 + 其余 ${oTask}）`
-      : tier === "busy" ? `<b>复习偏多：今天要复习 ${L} 个</b>（必做 ${mT} + 到期 / 积压 ${rT}）` : `<b>积压了 ${over.length} 个词</b>`;
-    const how = tier === "heavy" ? `${later ? `剩下 ${later} 个排到明天以后，${again}；` : ""}今天先不学新词，把旧词清一清。`
-      : tier === "busy" ? "先把复习做完，学新今天最多 1 群。"
-      : `你有 ${gap} 天没学了；必做的全部做完，其余每天最多 ${cap()} 个，剩下的会自动排到后面几天。`;
-    return `<wa-callout variant="warning" class="mod">${head}${oldest ? `，最早的拖了 ${oldest} 天` : ""}。${lack ? `还差${lack}。` : ""}
-      ${how}${leave ? `<div class="ops"><wa-button size="small" id="leaveBtn" data-gap="${Math.max(1, gap - 1)}">我请假了，整体往后顺延…</wa-button></div>` : ""}</wa-callout>`;
+  function modFree() {
+    const nx = nextGroups(1)[0], last = store.get("last") || nx?.lid;
+    const icons = {
+      learn: '<path d="M12 5v14M4 5.5C7 4 9 4 12 5.5c3-1.5 5-1.5 8 0v13c-3-1.5-5-1.5-8 0-3-1.5-5-1.5-8 0z"/>',
+      book: '<path d="M6 3h13v18H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3ZM3 17h16M8 7h7M8 11h5"/>',
+      browse: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 5v14M12 10h5M12 14h3"/>',
+      log: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="m8 9 1 1 2-2m-3 7 1 1 2-2m3-5h3m-3 6h3"/>',
+    };
+    const entry = (href, icon, title) => `<a class="free-entry" href="${href}"><span class="free-entry-top"><svg class="free-entry-icon" viewBox="0 0 24 24" aria-hidden="true">${icons[icon]}</svg></span><b>${title}</b></a>`;
+    return `<wa-card class="mod free-learning"><div slot="header" class="mh"><b>自由学习</b><span class="sub">新词自选</span><a href="#/drill">自由抽查 →</a></div>
+      <nav class="free-entries" aria-label="自由学习入口">
+        ${nx || progGet("learn") ? entry("#/drill/learn", "learn", progGet("learn") ? "继续学新词" : "学习新词") : ""}
+        ${last ? entry(`#/${last}/cont`, "book", "打开课件") : ""}${entry("#/list/all", "browse", "浏览已学词")}${entry("#/log", "log", "学习记录")}</nav></wa-card>`;
   }
   /* 最近一次有学习动作的日期（评过分、记过词群、加过生词）：首页判断连续几天没学 */
   function lastActive() {
@@ -497,9 +460,9 @@ const Study = (() => {
     return `<wa-card class="mod"><div slot="header" class="mh"><b>熟练度</b><span class="sub">共 ${cards.length} 词 · 掌握以上 ${n[4] + n[5]} 个</span></div>
       <div class="lvbar">${order.map(seg).join("")}</div>
       <div class="lvlegend">${order.map(i => `<a href="#/list/lv:${i}">${lvDot(i)}${LV_NAME[i]} <b>${n[i]}</b></a>`).join("")}</div>
-      <p class="note">词义按首次主动回忆与跨天独立证据评估；提示后为认识，未想起为生疏。旧等级继承，听音、拼写、语境另记；「斩」是人工标记。点一档看具体的词。</p></wa-card>`;
+      <p class="note">熟练度随回忆表现更新，点标签查看对应单词。</p></wa-card>`;
   }
-  const MODULES = [modHero, modToday, modBacklog, modMastery, modWeek, modLinks, modUnits];
+  const MODULES = [modHero, modToday, modFree, modMastery, modWeek, modLinks, modUnits];
   const FOOT = `<p class="foot">内容取自《英语四级 · 你还在背单词吗》，仅供个人学习，非官方。· <a href="https://github.com/Owenwoow/cet4-vocab-courseware" target="_blank" rel="noopener">GitHub 项目</a></p>`;
 
   function renderHome() {
@@ -605,19 +568,19 @@ const Study = (() => {
     setHead("巩固模式");
     const n = sc => scopeInfo(sc).items().length;
     const nx = nextGroups(1)[0], batch = nx && nextBatch();
-    const dueSv = progGet("due"), scopes = [["due", "今天到期", dueSv && dueSv.w ? dueSv.w.length - dueSv.done.length : dueRoundN(dueStat())],["learn", "学习新词", nx ? 1 : 0, batch || (nx ? `${lesTitle(nx.lid)} 第 ${nx.no} 群` : "全部学完")], ["today", "今天学的"], ["yesterday", "昨天学的"], ["week", "本周学的"],
+    const dueSv = progGet("due"), scopes = [["due", "今日学习", dueSv && dueSv.w ? dueSv.w.length - dueSv.done.length : dueRoundN(dueStat())],["learn", "学习新词", nx ? 1 : 0, batch || (nx ? `${lesTitle(nx.lid)} 第 ${nx.no} 群` : "全部学完")], ["today", "今天学的"], ["yesterday", "昨天学的"], ["week", "本周学的"],
       ["lastweek", "上周学的"], ["weeks", "本周 + 上周"], ["hard", "难词本"], ["vocab", "生词本"], ["all", "全部已学"]];
     const units = BOOK.parts.flatMap(p => p.units);
     view().innerHTML = `<div class="picker">
-      <h1>自由抽查</h1><p class="note">词义回忆会按首次回忆调整已学词的排期；选择识别、听音、拼写、语境只记各自成绩，不改变词义熟练度，也不代替早晚任务。</p>
+      <h1>自由抽查</h1><p class="note">词义回忆会按首次回忆调整已学词的排期；选择识别、听音、拼写、语境只记各自成绩，不改变词义熟练度，新词和专项练习均不影响今日计划的完成评价。</p>
       <section class="panel"><h2>练什么</h2>
         <div class="seg">${PRACTICES.map(([v, l]) => `<button data-practice="${v}" class="${(S.practiceType || "meaning") === v ? "on" : ""}">${l}</button>`).join("")}</div>
-        <p class="note">「今天到期」顺序固定：还没做过第一次复习的（昨天学的、昨天忘的）是必做，先出完、不占每天上限；其余复习间隔短的先、拖过的先、生疏的先，复习满 3 次的打乱；「学习新词」按书顺序一群一群学，总是先看词卡再出题；每个新词过几关、一次学多少在设置里改</p></section>
+        <p class="note">「今日学习」使用固定推荐计划，到期、遗忘重学和旧词校准共用每日预算；不随抽查类型改变。「学习新词」按书顺序先看词卡再闯关，可以自由选择，不是每日完成条件。新词关数和一次学习量在设置里调整</p></section>
       <section class="panel"><h2>抽查顺序</h2>
         <div class="seg">${ORDERS.map(([v, l]) => `<button data-order="${v}" class="${S.drillOrder === v ? "on" : ""}">${l}</button>`).join("")}</div>
         <p class="note">建议：当天、次日用课件顺序（借词群联系）；周末、二刷用字母或随机（去掉提示，检验真记住）；冲刺用重要性（🔥🔥🔥 → 🔥）</p></section>
       <section class="panel"><h2>抽哪些词</h2><div class="scopes">
-        ${scopes.map(([v, l, c, sub]) => { const k = c ?? n(v); return `<a class="sc${k ? "" : " off"}" href="#/drill/${v}${v === "learn" ? "" : `?practice=${S.practiceType || "meaning"}`}"><b>${l}</b><small>${sub || k + " 词"}</small></a>`; }).join("")}</div>
+        ${scopes.map(([v, l, c, sub]) => { const k = c ?? n(v); return `<a class="sc${k ? "" : " off"}" href="#/drill/${v}${v === "learn" || v === "due" ? "" : `?practice=${S.practiceType || "meaning"}`}"><b>${l}</b><small>${sub || k + " 词"}</small></a>`; }).join("")}</div>
         <div class="row"><span><b>按书上的范围</b><small>还没记为学过的词也能抽，但不排复习</small></span>
           <select id="bookScope"><option value="">选单元或课…</option>${units.map(u => `<option value="u${pad2(u.no)}">Unit ${u.no}</option>` +
             u.lessons.filter(l => l.ready).map(l => `<option value="${l.id}">　Unit ${u.no} · Lesson ${l.no}</option>`).join("")).join("")}</select></div></section></div>`;
@@ -730,6 +693,8 @@ const Study = (() => {
     setHead("巩固 · " + info.title);
     view().innerHTML = `<p class="empty">加载中…</p>`;
     const learn = !preset && sc === "learn", hash = location.hash, practice = learn ? "" : practiceOf();
+    const daily = sc === "due" && !practice && !preset;
+    const plan = daily ? dailyPlan() : null;
     const progressScope = practice ? `practice:${practice}:${sc}` : sc, sv = preset ? null : progGet(progressScope);
     let items, pool = [], pp = {phs: [], vbs: []}, lg = null;
     try {
@@ -738,7 +703,8 @@ const Study = (() => {
         items = preset ? preset.items : await itemsOf(sc);
         if (sv && sv.w) {   // 接着做：按上次的词单出（到期的词答完就排到以后、现取会换一批）；别的范围后来新进来的词接在后面
           const pos = new Map(sv.w.map((w, i) => [w, i])), cur = isRound(sc) ? [] : items, have = new Set(cur.map(x => x.word));
-          const old = [...cur.filter(x => pos.has(x.word)), ...await resolve(liveCards().filter(x => pos.has(x.word) && !have.has(x.word)))];
+          const allowed = x => !daily || planStatus().rows.some(ref => !ref.waived && ref.word === x.word && ref.life === x.card.life);
+          const old = [...cur.filter(x => pos.has(x.word) && allowed(x)), ...await resolve(liveCards().filter(x => pos.has(x.word) && !have.has(x.word) && allowed(x)))];
           items = [...old.sort((a, b) => pos.get(a.word) - pos.get(b.word)), ...sortBy(cur.filter(x => !pos.has(x.word)), S.drillOrder)];
         } else if (sv) {   // 旧版进度没存词单   // 上次答错、还没答对的（比如到期的词答错已排到明天，范围里就没有了）接着出
           const have = new Set(items.map(x => x.word));
@@ -756,8 +722,8 @@ const Study = (() => {
     const done = new Set(keep ? keep.done : []), rest = items.filter(x => !done.has(x.word)), rated = new Map(keep ? Object.entries(keep.rated || {}) : []);
     const res = {g: 0, m: 0, f: 0}; for (const r of rated.values()) res[r]++;
     // 今天到期：这一轮开始时给每个词定类型（评分后 s、d 就变了），接着做沿用进度里的；旧进度没有就不按类型统计
-    const mk = !isRound(sc) || preset ? null : keep ? keep.mk || null : Object.fromEntries(items.filter(x => x.card).map(x => [x.word, SRS.mustKind(x.card, T())]));
-    D = {sc, progressScope, practice, attemptId: keep?.id || newId(), mk, title:learn && lg.g ? `学习新词 · ${grpLabel(lg.gs.map(p => p.g))}` : `${info.title}${practice ? " · " + PRACTICES.find(([p]) => p === practice)[1] : ""}`, items, learn, lg, save: !preset, flip: false, pool, ...pp, hash,
+    const mk = daily ? Object.fromEntries(planStatus().rows.map(x => [x.word, x.kind])) : !isRound(sc) || preset ? null : keep ? keep.mk || null : Object.fromEntries(items.filter(x => x.card).map(x => [x.word, SRS.mustKind(x.card, T())]));
+    D = {sc, progressScope, practice, daily, plan, attemptId: keep?.id || newId(), mk, title:learn && lg.g ? `学习新词 · ${grpLabel(lg.gs.map(p => p.g))}` : `${info.title}${practice ? " · " + PRACTICES.find(([p]) => p === practice)[1] : ""}`, items, learn, lg, save: !preset, flip: false, pool, ...pp, hash,
       stages: learn ? Math.min(3, Math.max(1, +S.learnStages || 2)) : 0,   // 学习新词每个词过几关（这一轮开始时定下）
       queue: learn ? rest.slice(0, WINDOW) : rest, pending: learn ? rest.slice(WINDOW) : [],
       st: new Map(keep ? Object.entries(keep.st || {}) : []), kind: new Map(), cf: new Map(), rated, done, passed: items.length - rest.length, res, q: null, hist: [], back: 0};
@@ -767,6 +733,13 @@ const Study = (() => {
     }
     if (!learn && (!practice || practice === "meaning")) {
       D.rc = Recall.create(items, T(), newId(), keep?.rc || keep);
+      if (daily) {
+        const status = planStatus(), records = Object.fromEntries(status.rows.filter(row => items.some(x => x.word === row.word)).map(row => [row.word, row.record]));
+        D.rc = Recall.restoreDaily(D.rc, records);
+        const reserved = status.rows.filter(x => x.record.retryWanted).length;
+        D.rc.added = Object.values(records).filter(r => r.retryWanted).length;
+        D.rc.retryLimit = D.rc.added + Math.max(0, plan.budget.retryLimit - reserved);
+      }
       if (sc === "today" && !practice && !keep?.rc) {
         const nr = nightRecord(), restored = new Set(), records = {...nr.items};
         for (const x of items) {
@@ -821,9 +794,19 @@ const Study = (() => {
   function nextRecall() {
     stopAll();
     if (D.rc.d !== T()) { D.q = null; view().innerHTML = `<p class="empty">已进入新的学习日，请${btn("#/", "回首页")}重新开始；已记成绩保留。</p>`; return; }
+    if (D.daily) {
+      const status = planStatus(), rows = status.rows.filter(row => D.rc.w.includes(row.word));
+      if (rows.some(row => row.waived)) { startDrill("due"); return; }
+      D.rc = Recall.restoreDaily(D.rc, Object.fromEntries(rows.map(row => [row.word, row.record])));
+      D.rc.added = rows.filter(row => row.record.retryWanted).length;
+      D.rc.retryLimit = D.rc.added + Math.max(0, D.plan.budget.retryLimit - status.rows.filter(row => row.record.retryWanted).length);
+    }
     const c = D.rc.current;
     if (!c) { D.q = null; endRecall(); return; }
     const x = D.items.find(x => x.word === c.w);
+    if (D.daily && (dailyPlan().id !== D.plan.id || !Sync.get(cardKey(x), 0) || Sync.get(cardKey(x), 0).life !== D.rc.refs[x.word] || known.has(x.word))) {
+      startDrill("due"); return;
+    }
     if (!c.answered) c.hints = c.hints.filter(h => h !== "audio");
     D.q = {x, kind: "recall", state: c.answered ? "done" : "ask"}; showRecall();
     sayWord(x);
@@ -833,11 +816,13 @@ const Study = (() => {
     // 沿用原词卡，不重排或删掉卡片内容；用原背诵模式的模糊方式遮住答案，点击遮挡处展开。
     const head = `${wordHead(x, true)}${backHTML(x)}`;
     const hints = q.hints.length ? `<p class="hint-used">已使用提示${q.hints.includes("video") ? " · 视频" : ""}，本次不能计为独立想起</p>` : "";
+    const kind = D.daily ? D.plan.items.find(ref => ref.word === x.word)?.kind : "";
+    const relearn = kind === "relearn" && q.revealed ? `<p class="note">这个词正在重学。可以先看释义、例句和记忆法，重新熟悉后再确认本次表现；困难词会在本轮有限补测。</p>` : "";
     const rate = (r, label, variant) => `<wa-button variant="${variant}" data-recall-rate="${r}">${label}</wa-button>`;
     const controls = q.answered ? `<p class="recall-verdict">${RECALL_LABEL[q.answered]}</p><wa-button variant="brand" data-next="1">继续 <kbd>空格</kbd></wa-button>` : q.revealed
       ? `<div class="recall-ratings">${q.choiceWrong ? "" : q.hints.length ? rate("hinted", "提示后想起", "warning") : rate("independent", "想起了", "success") + rate("effort", "想得费劲", "brand")}${rate("failed", "没想起", "danger")}</div>`
       : `<wa-button variant="brand" data-recall-reveal="1">揭晓 <kbd>空格</kbd></wa-button>${chopBtn(x)}`;
-    put(`<div class="drill recall flipped"><div class="dbar"><span>${esc(D.title)}${q.retry ? " · 补测" : ""}</span><wa-progress-bar value="${s.total ? Math.round(s.completed / s.total * 100) : 0}"></wa-progress-bar><span>已做 ${s.completed}/${s.total} · 补测 ${s.retries}/${D.rc.added}</span><a href="#/" class="dx" title="退出并保存">✕</a></div><div class="dcard${q.revealed ? "" : " locked"}">${head}${hints}</div><div class="dops">${controls}</div></div>`);
+    put(`<div class="drill recall flipped"><div class="dbar"><span>${esc(D.title)}${kind ? " · " + ({review: "到期复习", relearn: "遗忘重学", calibrate: "旧词校准"})[kind] : ""}${q.retry ? " · 补测" : ""}</span><wa-progress-bar value="${s.total ? Math.round(s.completed / s.total * 100) : 0}"></wa-progress-bar><span>已做 ${s.completed}/${s.total} · 补测 ${s.retries}/${D.rc.added}</span><a href="#/" class="dx" title="退出并保存">✕</a></div><div class="dcard${q.revealed ? "" : " locked"}">${head}${hints}${relearn}</div><div class="dops">${controls}</div></div>`);
     {
       const cover = (selector, kind, label) => {
         for (const el of view().querySelectorAll(selector)) {
@@ -861,9 +846,12 @@ const Study = (() => {
   }
   function chopRecall() {
     const q = D.rc.current, x = D.q.x, c = Sync.get(cardKey(x), 0);
+    if (D.rc.d !== T()) { nextRecall(); return; }
     if (!q || q.answered || !c || c.life !== D.rc.refs[x.word] || known.has(x.word)) return;
     const u = SRS.chop(c, T(), x.word, S.examDate), pairs = [[cardKey(x), u]];
     D.rc.first[x.word] ||= {result: "chopped", hints: q.hints}; q.answered = "chopped";
+    const record = taskRecord(c.life);
+    pairs.push([SRS.taskKey(T(), c.life), {...record, d: T(), life: c.life, word: x.word, first: record.first || {result: "chopped", hints: q.hints, at: Date.now()}, ...(q.retry ? {retry: {result: "chopped", at: Date.now()}} : {})}]);
     if (D.sc === "today" && !D.practice) {
       const nr = nightRecord(); pairs.push([nightKey(), {...nr, finished: false, skipped: false, items: {...nr.items, [c.life]: {word: x.word, first: "chopped"}}}]);
     }
@@ -891,25 +879,41 @@ const Study = (() => {
     if (sentence) { saySent(D.q.x, /slow/.test(sentence.dataset.sent), sentence.dataset.sent.startsWith("src")); return; }
   }
   function answerRecall(result) {
-    if (D.rc.d !== T() || D.rc.current?.answered || !D.rc.current?.revealed) return;
-    const q = D.rc.current, x = D.q.x, id = `${D.rc.id}:${x.word}:first`, key = cardKey(x), c = Sync.get(key, 0), pairs = [];
+    if (D.rc.d !== T()) { nextRecall(); return; }
+    if (D.rc.current?.answered || !D.rc.current?.revealed) return;
+    const q = D.rc.current, x = D.q.x, key = cardKey(x), c = Sync.get(key, 0), pairs = [];
+    if (D.daily && dailyPlan().id !== D.plan.id) { startDrill("due"); return; }
+    if (x.card && (!c || c.life !== D.rc.refs[x.word] || known.has(x.word))) { startDrill(D.sc); return; }
+    const id = c ? SRS.dailyAttempt(T(), c.life) : `${D.rc.id}:${x.word}:first`;
+    const savedTask = c ? taskRecord(c.life) : {}, at = Date.now();
+    let schedule = null, taskKind = "free";
+    if (D.daily && q.retry && !planStatus().rows.find(row => row.life === c?.life)?.pendingRetry) { nextRecall(); return; }
     // 断点比卡片旧（例如另一端已完成同一题）时，以已落盘的首次结果为准，不能只跳过计数却显示新成绩。
-    const recorded = !q.retry && (c?.recall?.results?.[id] || c?.recall?.history?.find(h => h.id === id));
+    const recorded = !q.retry && (savedTask.first || (c && SRS.firstToday(c, T())) || c?.recall?.results?.[id]);
     if (recorded) { q.hints = recorded.hints || []; q.choiceWrong = recorded.result === "failed"; result = recorded.result; }
     D.rc = Recall.answer(D.rc, result); result = D.rc.current.answered;
-    if (!q.retry && c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
-      const next = SRS.rateRecall(c, result, T(), {id, hints: q.hints, key: x.word, exam: S.examDate});
+    if (!q.retry && !recorded && c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
+      const next = SRS.rateRecall(c, result, T(), {id, at, hints: q.hints, key: x.word, exam: S.examDate});
       if (next !== c) {
         const lg = {...logOf(T())}, r = SRS.recallGrade(result);
+        lg.dailyBase ||= JSON.parse(JSON.stringify({g: lg.g || 0, m: lg.m || 0, f: lg.f || 0, dv: lg.dv || 0, mv: lg.mv || 0, recall: lg.recall || {}, tasks: lg.tasks || {}}));
         lg[r] = (lg[r] || 0) + 1;
         if (SRS.isDue(c, T())) lg.dv = (lg.dv || 0) + 1;
         if (SRS.isMust(c, T())) lg.mv = (lg.mv || 0) + 1;
         lg.recall = {...lg.recall, [result]: (lg.recall?.[result] || 0) + 1};
         const task = !D.practice && isRound(D.sc) ? "due" : D.sc === "today" && !D.practice ? "evening" : "free";
+        taskKind = task;
         const oldTask = lg.tasks?.[task] || {};
         lg.tasks = {...lg.tasks, [task]: {...oldTask, [result]: (oldTask[result] || 0) + 1}};
         pairs.push([key, next], ["log:" + T(), lg]); x.card = next;
+        schedule = recallSchedule(next);
       }
+    }
+    if (c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
+      const first = savedTask.first || (recorded ? {...recorded, at: recorded.at || 0} : {result, hints: q.hints, at, due: SRS.isDue(c, T()), must: SRS.isMust(c, T()), task: taskKind, planned: D.daily, kind: D.mk?.[x.word], counted: !!schedule, ...(schedule ? {schedule} : {})});
+      const wanted = D.daily && D.rc.queue.some(entry => entry.w === x.word && entry.retry);
+      pairs.push([SRS.taskKey(T(), c.life), {...savedTask, d: T(), life: c.life, word: x.word, first,
+        retryWanted: !!(savedTask.retryWanted || wanted), ...(q.retry ? {retry: savedTask.retry || {result, at: Date.now()}} : {})}]);
     }
     if (D.sc === "today" && !D.practice && c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
       const nr = nightRecord(), old = nr.items[c.life] || {};
@@ -927,7 +931,7 @@ const Study = (() => {
       const records = words.map(w => D.rc.first[w]);
       return `<li><b>${label} ${words.length}</b>：独立 ${records.filter(r => Recall.independent(r?.result)).length} · 提示 ${records.filter(r => r?.result === "hinted").length} · 未想起 ${records.filter(r => r?.result === "failed").length}${records.some(r => r?.result === "legacy") ? "（含旧版成绩）" : ""}</li>`;
     }).join("") : "";
-    view().innerHTML = `<div class="drill end"><h1>${s.total ? "这一轮任务完成" : "暂无待做词"}</h1><div class="tally"><span>完成 <b>${s.completed}/${s.total}</b></span><span class="g">独立想起 <b>${s.independent + s.effort}</b></span><span>其中费劲 <b>${s.effort}</b></span><span class="m">提示后 <b>${s.hinted}</b></span><span class="f">未想起/想错 <b>${s.failed}</b></span>${s.legacy ? `<span>旧版成绩 <b>${s.legacy}</b></span>` : ""}${s.chopped ? `<span>斩 <b>${s.chopped}</b></span>` : ""}</div>${types ? `<ul class="ktally">${types}</ul>` : ""}<p>补测 ${s.retries}/${D.rc.added} · 独立想起 ${s.retrySuccess} · 提示后 ${s.retryHinted} · 未想起 ${s.retryFailed} · 待加强 ${s.strengthen.length}</p>${s.strengthen.length ? `<p class="note">待加强：${s.strengthen.map(esc).join("、")}</p>` : ""}<p class="note">首次表现已保留。补测不覆盖首次成绩、不推进站点；提示后两天检查，未想起次日检查。未学词只练习，不创建复习卡。</p>${more ? `<p class="note">还有 ${more} 个待做</p>` : ""}<div class="ops">${more ? `<wa-button variant="brand" id="nextRound">再来一轮</wa-button>` : ""}${btn("#/", "回首页", 'variant="brand"', "medium")}${btn("#/drill", "自由抽查", undefined, "medium")}</div></div>`;
+    view().innerHTML = `<div class="drill end"><h1>${D.daily && !more ? "今日计划已完成" : s.total ? "这一轮任务完成" : "暂无待做词"}</h1><div class="tally"><span>完成 <b>${s.completed}/${s.total}</b></span><span class="g">独立想起 <b>${s.independent + s.effort}</b></span><span>其中费劲 <b>${s.effort}</b></span><span class="m">提示后 <b>${s.hinted}</b></span><span class="f">未想起/想错 <b>${s.failed}</b></span>${s.legacy ? `<span>旧版成绩 <b>${s.legacy}</b></span>` : ""}${s.chopped ? `<span>斩 <b>${s.chopped}</b></span>` : ""}</div>${types ? `<ul class="ktally">${types}</ul>` : ""}<p>补测 ${s.retries}/${D.rc.added} · 独立想起 ${s.retrySuccess} · 提示后 ${s.retryHinted} · 未想起 ${s.retryFailed} · 待加强 ${s.strengthen.length}</p>${s.strengthen.length ? `<p class="note">待加强：${s.strengthen.map(esc).join("、")}</p>` : ""}<p class="note">首次表现已保留。补测不覆盖首次成绩、不推进站点；提示后两天检查，未想起次日检查。未学词只练习，不创建复习卡。</p>${D.daily && !more ? `<p class="note">今天可以安心结束。剩余积压会分批安排，新词由你自行选择。</p>` : ""}${more ? `<p class="note">今日计划还剩 ${more} 词</p>` : ""}<div class="ops">${more ? `<wa-button variant="brand" id="nextRound">继续今日计划</wa-button>` : ""}${btn("#/", "回首页", 'variant="brand"', "medium")}${btn("#/drill", "自由抽查", undefined, "medium")}</div></div>`;
   }
 
   /* 正在看的那一题：回看时是历史里的，否则是当前题 */
@@ -1154,14 +1158,14 @@ const Study = (() => {
     for (const p of D.lg.gs) { if (!p.words.every(w => D.done.has(w))) break; finishGroup(p); }
   }
   const finishLearn = () => D.lg.gs.forEach(finishGroup);
-  /* 当天的评分计数；wasDue 到期复习记进 dv，wasMust 其中的必做再记进 mv（每天上限只扣 dv − mv） */
+  /* 当天的评分计数；wasDue 到期复习记进 dv，wasMust 其中的必做再记进 mv（只作历史统计，计划预算不再豁免首次复习） */
   function bump(r, wasDue, wasMust) {
     const d = T(), lg = {...logOf(d)};
     lg[r] = (lg[r] || 0) + 1; if (wasDue) lg.dv = (lg.dv || 0) + 1; if (wasMust) lg.mv = (lg.mv || 0) + 1;
     Sync.set("log:" + d, lg);
   }
   /* 今天到期这一轮的结束页：按这一轮开始时定的类型分行统计（D.mk），没有的类型不显示；没评分就过关的是斩掉的 */
-  const MK = [["new", "必做 · 昨天学的"], ["lapse", "必做 · 昨天忘的"], ["late", "必做 · 补第一次复习"], ["over", "积压 · 拖过期的"], ["due", "到期 · 今天到期的"]];
+  const MK = [["review", "到期复习"], ["relearn", "遗忘重学"], ["calibrate", "旧词校准"], ["new", "昨天学的"], ["lapse", "昨天忘的"], ["late", "补第一次复习"], ["over", "积压词"], ["due", "今天到期的"]];
   function kindTally() {
     if (!D.mk) return "";
     const rows = MK.map(([k, label]) => {
@@ -1247,7 +1251,7 @@ const Study = (() => {
       <section class="panel"><h2>本周最常忘的词</h2>${worst.length ? `<div class="worst">${worst.map(x => `<span data-w="${esc(x.word)}">${esc(x.word)}${x.card.l ? ` <small>✗${x.card.l}</small>` : ""}</span>`).join("")}</div>
         ${btn(`#/list/hard`, "打开难词本")}` : `<p class="note">还没有忘过的词</p>`}</section>
       ${fc.length ? `<section class="panel"><h2>接下来 7 天要复习</h2><div class="fc">${fc.map(x => `<div><span class="bar" style="height:${Math.round(x.n / maxF * 60) + 2}px"></span><b>${x.n}</b><small>${WEEK[SRS.dow(x.d)]}</small></div>`).join("")}</div>
-        <p class="note">明天那一格包括之前拖下来没做的；昨天学的等必做的词全做，其余每天最多做 ${cap()} 个，间隔短的先做</p></section>` : ""}</div>`;
+        <p class="note">明天那一格包括之前拖下来没做的；所有复习和旧词校准共用每日预算；积压会分批安排，新词始终自选</p></section>` : ""}</div>`;
   }
 
   /* ---------- 路由入口：#/、#/drill[/范围]、#/list/范围、#/week[/周一]、#/log[/课id] ---------- */
@@ -1315,6 +1319,13 @@ const Study = (() => {
   }
   function onClick(e) {
     const t = e.target, v = view();
+    if (t.closest("[data-migration-exit]")) {
+      const state = memoryState();
+      if (SRS.migrationStatus(liveCards(), T(), state, dailyPlan().budget.limit).ready) {
+        Sync.set("migration:state", {...state, mode: "normal", ended: T()}); renderHome();
+      }
+      return;
+    }
     if (t.closest("#nightSkip")) { Sync.set(nightKey(), {...nightRecord(), skipped: true, finished: false}); renderHome(); return; }
     if (D && /^#\/drill\/./.test(location.hash)) {
       const q = D.q, x = q && q.x;

@@ -46,7 +46,7 @@ const Recall = (() => {
     if (q.retry) s.retry[q.w] = record;
     else {
       s.first[q.w] = record;
-      if (!independent(result) && s.added < 5) {
+      if (!independent(result) && s.added < (s.retryLimit ?? 5)) {
         s.added++;
         s.queue.splice(Math.min(s.queue.length, 4), 0, {w: q.w, retry: true});
       }
@@ -75,6 +75,20 @@ const Recall = (() => {
       finished: !!items.length && done.length === items.length && !!record?.finished && !record?.skipped,
       skipped: !!record?.skipped};
   }
+  /* 当日分词完成记录比断点更可靠：补回同步/导入后的成绩，不重放正式评分。
+     保留尚未作答的当前题（含提示和揭晓），已完成的补测不能被旧断点复活。 */
+  function restoreDaily(state, records) {
+    const s = copy(state);
+    for (const w of s.w) {
+      const r = records[w]; if (!r?.first) continue;
+      s.first[w] = {result: r.first.result, hints: r.first.hints || []};
+      s.queue = s.queue.filter(q => q.w !== w || q.retry && r.retryWanted && !r.retry);
+      if (r.retry) s.retry[w] = {result: r.retry.result};
+      else if (r.retryWanted && !s.queue.some(q => q.w === w && q.retry)) s.queue.push({w, retry: true});
+    }
+    if (s.current && (!s.queue[0] || s.current.w !== s.queue[0].w || s.current.retry !== s.queue[0].retry || s.current.answered)) s.current = null;
+    return begin(s);
+  }
   function snapshot(s, mk) {
     return {d: s.d, w: s.w.slice(), done: Object.keys(s.first), rated: {}, rc: copy(s), ...(mk ? {mk: {...mk}} : {})};
   }
@@ -97,6 +111,6 @@ const Recall = (() => {
     if (v.rc) result.rc = create(w.map(word => ({word, card: doc["srs:" + word]?.[0] || doc["vocab:" + word]?.[0]})), day, v.rc.id, v.rc);
     return result;
   }
-  return {create, begin, hint, answer, next, summary, nightStats, snapshot, validProgress, independent};
+  return {create, begin, hint, answer, next, summary, nightStats, restoreDaily, snapshot, validProgress, independent};
 })();
 if (typeof module === "object" && module.exports) module.exports = Recall;

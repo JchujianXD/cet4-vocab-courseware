@@ -1,6 +1,7 @@
 /* 云同步：进度存在自己 GitHub 账号的一个 Secret Gist 里，不需要服务器。
    本地优先：先写本机，再在后台推送；打开页面、切回页面时拉取合并。
    每个键存 [值, 修改时间]，合并时按键取较新的一份，两台设备各改各的也不会互相覆盖。
+   plan: 当日词单取首份，task: 合并不可变首次与补测（显式备份覆盖用恢复批次优先）；其他键沿用取新。
    dump() / load(pairs) 给导出 / 导入备份用（规则在 backup.js）：dump 返回全部进度的拷贝，load 按给定的时间一次写入一批；
    云同步 token（cfg）不经过这两个函数 */
 "use strict";
@@ -74,9 +75,10 @@ const Sync = (() => {
     const changed = [];
     for (const [k, r] of Object.entries(remote)) {
       const l = doc[k];
-      if (l && !newer(r, l)) continue;
-      if (!l || !same(l[0], r[0])) changed.push(k);
-      doc[k] = r;
+      const merged = typeof SRS !== "undefined" ? SRS.mergeStudyRecord(k, l, r) : !l || newer(r, l) ? r : l;
+      if (l && same(l, merged)) continue;
+      if (!l || !same(l[0], merged[0])) changed.push(k);
+      doc[k] = merged;
     }
     doc = upgrade(doc);
     return changed;

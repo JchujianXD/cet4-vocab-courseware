@@ -126,3 +126,11 @@ test("备份恢复当日有效断点，忽略跨日、已删/重建卡，不恢�
   assert.equal(R.validProgress({d: day, g: "u01-l01:g1"}, {"learn:u01-l01:g1": [day, 1]}, day), 0);
   const roundTrip = B.parse(B.text(out, now, "isolated")); assert.deepEqual(roundTrip.d, out);
 });
+
+test('补测配额可受每日预算限制，权威首次无需补测时旧断点不再恢复', () => {
+  let s=R.create(items(2),day,'daily');
+  s.retryLimit=0;s.current.revealed=true;s=R.answer(s,'failed');assert.equal(s.added,0);
+  s=R.create(items(2),day,'daily');s.current.revealed=true;s=R.answer(s,'failed');
+  s=R.restoreDaily(s,{word0:{first:{result:'independent'},retryWanted:false}});
+  assert.ok(!s.queue.some(q=>q.w==='word0'));
+});

@@ -549,3 +549,13 @@ test("关掉拼写：一路记得能走到牢记，间隔按放宽的熟练度�
   assertNear(SRS.rate(base, "g", t, {off}).d, t, 30);                                 // 5 级 30 天
   assertNear(SRS.rate(base, "g", t).d, t, 21);                                        // 默认 4 级 21 天
 });
+
+test('每日计分标识按学习日及生命周期固定，新建卡与旧识别成绩区分', () => {
+  const day='2026-11-02', c=SRS.freshCard('2026-11-01','life');
+  assert.equal(SRS.needsCalibration(c),false);
+  const id=SRS.dailyAttempt(day,c.life), graded=SRS.rateRecall(c,'failed',day,{id});
+  assert.equal(SRS.rateRecall(graded,'independent',day,{id}),graded);
+  assert.notEqual(SRS.dailyAttempt(SRS.add(day,1),c.life),id);
+  assert.notEqual(SRS.dailyAttempt(day,'rebuilt'),id);
+  assert.equal(SRS.needsCalibration(SRS.upgradeCard({...SRS.newCard('2026-10-01'),h:'ggg',n:3,s:3},'old')),true);
+});

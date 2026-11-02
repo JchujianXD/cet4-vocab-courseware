@@ -1,5 +1,9 @@
 /* 滚动复习规则（纯函数，不碰页面和存储；浏览器里是全局 SRS，Node 里 require 进来跑单元测试）
 
+   2026-11-02：日常任务统一走 makeDailyPlan / dailyStatus，所有主任务共用张数和时间预算；
+   词单当天固定，补测最多五次、不重复评分；晚间不再必做，新词始终自选。
+   新规则及数据兼容见 docs/plans/2026-11-02-daily-learning.md。下面旧队列和上限说明仅用于兼容。
+
    2026-10-28 日常复习已改主动回忆，当前规则见 rateRecall 上方及 docs/plans/2026-10-28-active-recall.md。
    旧卡等级先快照保留；下面 g/m/f、q 与自动题型的说明用于旧成绩兼容及原有新学流程，不再用于日常回忆评分。
 
@@ -108,12 +112,58 @@ const SRS = (() => {
   /* 同步时间保持原样；只对有效卡升级。可在载入、导入和合并后重复调用。 */
   function upgradeDoc(doc) {
     const off = [...(doc["set:quizListen"]?.[0] === false ? [TYPE.LISTEN] : []), ...(doc["set:quizSpell"]?.[0] === false ? [TYPE.SPELL] : [])];
-    return Object.fromEntries(Object.entries(doc).map(([k, p]) => [k, /^(srs|vocab):/.test(k) ? [upgradeCard(p[0], k, p[1], {off}), p[1]] : p]));
+    const upgraded = Object.fromEntries(Object.entries(doc).map(([k, p]) => {
+      if (!/^(srs|vocab):/.test(k)) return [k, p];
+      let c = upgradeCard(p[0], k, p[1], {off});
+      // 两端离线答了同一主任务：以合并后的首次事件还原同一次评分的排期。
+      // 只校正当前最后一次正式评分；较晚学习日、人工重学、墓碑与新生命周期不回滚。
+      const last = c?.recall?.history?.at(-1), event = last && doc[taskKey(last.day, c.life)]?.[0], first = event?.first;
+      if (first?.schedule && !c.z && event.life === c.life && event.d === last.day && last.id === dailyAttempt(last.day, c.life)
+          && (last.result !== first.result || last.at !== first.at)) {
+        const fields = Object.fromEntries(Object.entries(first.schedule).filter(([k]) => ["a", "s", "d", "l", "r", "n", "t", "h", "v", "z"].includes(k)));
+        const recall = Object.fromEntries(Object.entries(first.schedule.recall || {}).filter(([k]) => ["level", "days", "day", "result"].includes(k)));
+        // 保留评分之后的整体顺延，包括仍运行旧版 shift 的设备；两日期同量变化才视作顺延。
+        const baseline = c.recall.schedule, canShift = baseline?.id === last.id && [c.a, c.d, baseline.a, baseline.d].every(d => typeof d === "string");
+        const delta = canShift ? diff(c.a, baseline.a) : 0;
+        const shifted = canShift && diff(c.d, baseline.d) === delta ? delta : 0;
+        const schedule = {id: last.id, a: fields.a, d: fields.d};
+        if (shifted) { fields.a = add(fields.a, shifted); fields.d = add(fields.d, shifted); }
+        const record = {id: last.id, day: last.day, due: first.due ?? last.due, result: first.result, hints: first.hints || [], at: first.at};
+        c = {...c, ...fields, recall: {...c.recall, ...recall, schedule,
+          results: {...c.recall.results, [last.id]: {result: first.result, hints: first.hints || [], at: first.at}},
+          history: c.recall.history.map(h => h.id === last.id ? record : h)}};
+      }
+      return [k, [c, p[1]]];
+    }));
+    // 新版日志 = 原有当日基线 + 去重后的分词首次事件。并发设备答同一词也只计一次。
+    // 旧日志、专项成绩以及日志原同步时间均保留。
+    const byDay = new Map();
+    for (const [k, [v]] of Object.entries(upgraded)) if (k.startsWith("task:") && v?.first?.counted) {
+      if (!byDay.has(v.d)) byDay.set(v.d, []);
+      byDay.get(v.d).push(v.first);
+    }
+    for (const [day, records] of byDay) {
+      const p = upgraded["log:" + day]; if (!p?.[0]?.dailyBase) continue;
+      const log = {...p[0], ...JSON.parse(JSON.stringify(p[0].dailyBase))};
+      for (const first of records) {
+        const r = recallGrade(first.result), task = first.task || "free";
+        log[r] = (log[r] || 0) + 1;
+        if (first.due) log.dv = (log.dv || 0) + 1;
+        if (first.must) log.mv = (log.mv || 0) + 1;
+        log.recall = {...log.recall, [first.result]: (log.recall?.[first.result] || 0) + 1};
+        log.tasks = {...log.tasks, [task]: {...log.tasks?.[task], [first.result]: (log.tasks?.[task]?.[first.result] || 0) + 1}};
+      }
+      upgraded["log:" + day] = [log, p[1]];
+    }
+    return upgraded;
   }
-  const freshCard = (date, life) => upgradeCard(newCard(date), life, 0);
+  const freshCard = (date, life) => {
+    const c = upgradeCard(newCard(date), life, 0);
+    return {...c, recall: {...c.recall, origin: "new"}};
+  };
   const recallResult = (correct, hinted = false, effort = false) => !correct ? "failed" : hinted ? "hinted" : effort ? "effort" : "independent";
   const recallGrade = result => result === "failed" ? "f" : result === "hinted" ? "m" : "g";
-  function rateRecall(card, result, t, opt = {}) {
+  function rateRecallRaw(card, result, t, opt = {}) {
     if (!["independent", "effort", "hinted", "failed"].includes(result)) throw new Error("无效的回忆结果");
     const c = upgradeCard(card, opt.key), id = opt.id;
     if (id && (c.attempts || []).includes(id)) return card;
@@ -121,8 +171,8 @@ const SRS = (() => {
     const evidence = due && old.day !== t && (result === "independent" || result === "effort");
     const days = r === "g" ? (old.days || 0) + (evidence ? 1 : 0) : 0;
     const rec = {...old, days, day: due ? t : old.day, result,
-      results: id ? {...old.results, [id]: {result, hints: opt.hints || []}} : old.results || {},
-      history: [...(old.history || []), {id, day: t, result, hints: opt.hints || [], due}].slice(-H_LEN)};
+      results: id ? {...old.results, [id]: {result, hints: opt.hints || [], ...(opt.at ? {at: opt.at} : {})}} : old.results || {},
+      history: [...(old.history || []), {id, day: t, result, hints: opt.hints || [], due, ...(opt.at ? {at: opt.at} : {})}].slice(-H_LEN)};
     let n = {...c, recall: rec, attempts: id ? [...(c.attempts || []), id] : c.attempts || [], r, n: (c.n || 0) + 1, t};
     if (r !== "g") {
       rec.level = r === "f" ? 1 : 2;
@@ -140,6 +190,11 @@ const SRS = (() => {
     let gap = stationGap(s, level(n));
     if (result === "effort") gap = Math.max(1, Math.floor(gap * 0.7));
     return {...n, d: examCap(add(t, spread(gap, opt.key || "", t)), t, opt.key || "", opt.exam)};
+  }
+  function rateRecall(card, result, t, opt = {}) {
+    const next = rateRecallRaw(card, result, t, opt);
+    if (next === card || typeof opt.id !== "string" || !opt.id.startsWith("daily:")) return next;
+    return {...next, recall: {...next.recall, schedule: {id: opt.id, a: next.a, d: next.d}}};
   }
   function rateSkill(card, ability, r, t, opt = {}) {
     if (!["recognition", "listen", "spell", "context"].includes(ability)) throw new Error("无效的专项类型");
@@ -339,8 +394,125 @@ const SRS = (() => {
   /* 请假顺延：学习日和到期日一起后移，整条路线不变 */
   const shift = (c, n) => ({...c, a: add(c.a, n), d: add(c.d, n)});
 
+  /* 2026-11-02：统一每日计划。以下只选择任务，评分仍唯一走 rateRecall。
+     所有队列共用张数和预计用时预算（补测预留最多五次）；计划当天固定，4 点换日。
+     plan 是不可变词单；task 按学习日及 life 分键，保存首次与补测，不能靠日志总数重算完成。
+     旧四选一不作校准证据；结构升级不改卡片、排期或业务时间。 */
+  const recalled = c => !!c.z || !!c.recall?.result || !!c.recall?.history?.length;
+  const needsCalibration = c => c.recall?.origin !== "new" && !recalled(c);
+  const dailyAttempt = (day, life) => `daily:${day}:${life}:first`;
+  const taskKey = (day, life) => `task:${day}:${encodeURIComponent(life)}`;
+  function firstToday(c, day) {
+    return c.recall?.history?.find(h => h.day === day) || null;
+  }
+  function migrationState(items, day, old) {
+    const legacy = items.filter(x => x.card.recall?.origin !== "new");
+    if (old?.v === 1 && ["active", "normal"].includes(old.mode) && Array.isArray(old.cohort)) {
+      if (old.ended) return old; // 用户已经退出，后续零星旧词由统一调度吸收。
+      const added = legacy.filter(x => !old.cohort.some(ref => ref.life === x.card.life));
+      const mode = legacy.some(x => needsCalibration(x.card)) ? "active" : old.mode;
+      if (!added.length && mode === old.mode) return old;
+      return {...old, mode, cohort: [...old.cohort, ...added.map(x => ({word: x.word, life: x.card.life}))]};
+    }
+    const cohort = legacy.map(x => ({word: x.word, life: x.card.life}));
+    return {v: 1, mode: legacy.some(x => needsCalibration(x.card)) ? "active" : "normal", started: day, cohort};
+  }
+  function migrationStatus(items, day, state, budget = 50) {
+    const live = new Map(items.map(x => [x.card.life, x]));
+    const cohort = (state?.cohort || []).map(x => live.get(x.life)).filter(Boolean);
+    const remaining = cohort.filter(x => !recalled(x.card)).length;
+    const lives = new Set(cohort.map(x => x.card.life));
+    const recent = items.flatMap(x => (x.card.recall?.history || []).filter(h => h.due || lives.has(x.card.life)))
+      .filter(h => h.day >= add(day, -6) && h.day <= day);
+    const success = recent.filter(h => h.result === "independent" || h.result === "effort").length;
+    const ratio = recent.length ? success / recent.length : 0;
+    const load = items.filter(x => isDue(x.card, day) && !needsCalibration(x.card)).length;
+    const calibrated = cohort.length - remaining, coverage = cohort.length ? calibrated / cohort.length : 1;
+    const ready = !cohort.length || coverage >= .9 && recent.length >= Math.min(8, cohort.length) && ratio >= .7 && load <= budget;
+    return {active: state?.mode === "active", total: cohort.length, calibrated, remaining, coverage, ratio, load, ready};
+  }
+  function dailyBudget(items, day, opt = {}) {
+    const minutes = Math.max(5, Math.min(60, +opt.minutes || 20)), cap = Math.max(1, Math.min(200, +opt.cap || 50));
+    const recent = items.flatMap(x => x.card.recall?.history || []).filter(h => h.day >= add(day, -6) && h.day <= day);
+    const weak = recent.filter(h => h.result === "failed" || h.result === "hinted").length;
+    const seconds = 20 + (recent.length ? Math.round(20 * weak / recent.length) : 0);
+    const slots = Math.max(1, Math.floor(minutes * 60 / seconds));
+    const retryLimit = Math.min(5, Math.floor(slots / 6));
+    return {minutes, cap, seconds, retryLimit, limit: Math.min(cap, slots - retryLimit)};
+  }
+  function makeDailyPlan(items, day, opt = {}) {
+    const budget = dailyBudget(items, day, opt), seen = new Set(), queues = {relearn: [], review: [], calibrate: []};
+    for (const x of items) {
+      const c = x.card;
+      if (seen.has(x.word) || c.z && !isDue(c, day) || firstToday(c, day)) continue;
+      seen.add(x.word);
+      const kind = needsCalibration(c) ? "calibrate" : !isDue(c, day) ? "" : c.recall?.result === "failed" || c.recall?.result === "hinted" || c.r === "f" ? "relearn" : "review";
+      if (kind) queues[kind].push({...x, kind});
+    }
+    const urgency = x => Math.max(0, diff(day, x.card.d)) / Math.max(1, stationGap(Math.max(1, x.card.s), level(x.card))) + (x.kind === "relearn" ? 3 : x.kind === "review" ? 2 : 1);
+    for (const q of Object.values(queues)) q.sort((a, b) => urgency(b) - urgency(a) || (a.order || 0) - (b.order || 0) || a.word.localeCompare(b.word));
+    const credited = Math.max(0, Math.floor(+opt.credited || 0)), selected = [], used = {relearn: 0, review: 0, calibrate: 0};
+    const available = Object.values(queues).reduce((n, q) => n + q.length, 0);
+    // 按各队列的紧迫度动态分配；空队列立即让出容量，不设必须凑齐的固定比例。
+    while (selected.length < Math.max(0, budget.limit - credited)) {
+      const kind = Object.keys(queues).filter(k => queues[k].length).sort((a, b) => urgency(queues[b][0]) / (used[b] + 1) - urgency(queues[a][0]) / (used[a] + 1))[0];
+      if (!kind) break;
+      const x = queues[kind].shift(); used[kind]++;
+      selected.push({word: x.word, life: x.card.life, kind});
+    }
+    return {v: 1, d: day, id: opt.id || day, created: opt.created || 0, budget, credited, available, items: selected};
+  }
+  function dailyStatus(plan, items, records = {}) {
+    const live = new Map(items.map(x => [x.word, x])), rows = (plan?.items || []).map(ref => {
+      const x = live.get(ref.word), retired = !x || x.card.life !== ref.life;
+      const record = records[ref.life]?.first ? records[ref.life] : !retired && firstToday(x.card, plan.d) ? {first: firstToday(x.card, plan.d)} : {};
+      return {...ref, x: retired ? null : x, record, done: retired || !!record.first, pendingRetry: !retired && !!record.retryWanted && !record.retry};
+    });
+    // 离线设备可能已完成另一份词单：这些真实主任务抵扣本计划，不能在同步后再加一轮。
+    const plannedLives = new Set(rows.map(row => row.life));
+    const external = Object.entries(records).filter(([life, r]) => !plannedLives.has(life) && r.first?.planned && r.d === plan?.d)
+      .map(([life, record]) => {
+        const x = live.get(record.word), valid = x?.card.life === life;
+        return {word: record.word, life, kind: record.first.kind || "review", x: valid ? x : null, record, done: true, external: true};
+      });
+    let credit = external.length;
+    for (const row of rows.slice().reverse()) if (credit && !row.done) { row.done = true; row.waived = true; row.x = null; credit--; }
+    rows.push(...external);
+    const reserved = rows.filter(x => x.record.retryWanted && ["failed", "hinted"].includes(x.record.first?.result))
+      .sort((a, b) => (a.record.first.at || 0) - (b.record.first.at || 0) || a.word.localeCompare(b.word)).slice(0, plan?.budget?.retryLimit ?? 5);
+    for (const row of rows) {
+      row.record = {...row.record, retryWanted: reserved.includes(row)};
+      row.pendingRetry = !!row.x && row.record.retryWanted && !row.record.retry;
+    }
+    const total = (plan?.items.length || 0) + (plan?.credited || 0);
+    const actual = rows.filter(x => x.done && !x.waived).length + (plan?.credited || 0), completed = Math.min(total, actual);
+    const retries = rows.filter(x => x.record.retry).length, pendingRetries = rows.filter(x => x.pendingRetry).length;
+    return {rows, completed, total, retries, pendingRetries, todo: rows.filter(x => !x.done || x.pendingRetry).length,
+      finished: completed === total && !pendingRetries, workload: actual + retries};
+  }
+  /* 只有新计划键使用不可变首份规则；完成键合并首次和补测，避免旧断点覆盖新完成。
+     其他键继续原逐键取新协议，墓碑仍取较新值；导入覆盖仍可显式替换。 */
+  function mergeStudyRecord(key, a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    const newer = a[1] > b[1] || a[1] === b[1] && JSON.stringify(a[0]) > JSON.stringify(b[0]);
+    if (!a[0] || !b[0]) return newer ? a : b;
+    if (/^(plan|task):/.test(key) && (a[0].reset || 0) !== (b[0].reset || 0)) return (a[0].reset || 0) > (b[0].reset || 0) ? a : b;
+    if (key.startsWith("plan:") && a[0].v === 1 && b[0].v === 1) {
+      const rank = p => `${String(p.created || 0).padStart(16, "0")}|${p.id}|${JSON.stringify(p)}`;
+      return rank(a[0]) <= rank(b[0]) ? a : b;
+    }
+    if (key.startsWith("task:") && a[0].life === b[0].life) {
+      const pick = (x, y) => !x ? y : !y ? x : (x.at || 0) < (y.at || 0) || (x.at || 0) === (y.at || 0) && JSON.stringify(x) <= JSON.stringify(y) ? x : y;
+      const base = newer ? a[0] : b[0], first = pick(a[0].first, b[0].first), retry = pick(a[0].retry, b[0].retry);
+      return [{...base, first, ...(retry ? {retry} : {}), retryWanted: ["failed", "hinted"].includes(first?.result) && !!(a[0].retryWanted || b[0].retryWanted)}, Math.max(a[1], b[1])];
+    }
+    return newer ? a : b;
+  }
+
   return {EXAM, TYPE, today, reviews, add, diff, dow, monday, stationGap, spread, stationDue, examCap, newCard, isDue,
     rate, rateRecall, rateSkill, recallResult, recallGrade, legacyLevel, upgradeCard, upgradeDoc, freshCard, chop, isHard, dueList, isPhrase, level, streak, pickType, gradeChoice, gradeSpell, editDist, similar, senseKeys, posSet, distractorTag, confAdd, confDrop, shuffleSpread, pairSimilar,
-    isMust, mustKind, band, queue, loadTier, forecast, shift};
+    isMust, mustKind, band, queue, loadTier, forecast, shift,
+    recalled, needsCalibration, dailyAttempt, taskKey, firstToday, migrationState, migrationStatus, dailyBudget, makeDailyPlan, dailyStatus, mergeStudyRecord};
 })();
 if (typeof module === "object" && module.exports) module.exports = SRS;
