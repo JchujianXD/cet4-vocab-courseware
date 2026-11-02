@@ -748,7 +748,7 @@ function renderSettings() {
     {name: "网页全屏脚本", desc: "课件讲解自动铺满网页，普通 B 站视频保持原布局", file: "bilibili-webfull.user.js"},
     {name: "小窗净化脚本", desc: "隐藏视频小窗里的推荐和引流，保留播放控件", file: "bilibili-clean-player.user.js"},
   ];
-  const have = AUD.voices || [];
+  const have = L ? AUD.voices || [] : Object.keys(VOICE_NAMES);
   const sample = L ? allEntries()[0].word : "hello";
   const back = prevHash, bm = back.match(/^#\/u(\d\d)-l(\d\d)/);
   $("#settingsView").innerHTML = `
@@ -758,12 +758,32 @@ function renderSettings() {
       <div class="voices">${Object.keys(VOICE_NAMES).map(v => `
         <button class="voice${S.voice === v ? " on" : ""}" data-set="voice" data-val="${v}"${have.includes(v) ? "" : " disabled"}>
           <b>${VOICE_NAMES[v]}</b><small>${have.includes(v) ? VOICE_DESC[v] : "本课未生成"}</small>
-          <span class="try" data-try="${v}" title="试听">🔊</span></button>`).join("")}</div>
+          ${L ? `<span class="try" data-try="${v}" title="试听">🔊</span>` : ""}</button>`).join("")}</div>
       <div class="row"><span><b>语速</b><small>单词、例句都按这个速度播放；例句旁的 🐢 始终是慢速</small></span>
         ${seg("rate", [[0.75, "慢"], [0.9, "较慢"], [1, "常速"]])}</div>
-      <p class="hint">试听词：${esc(sample)}</p>
+      ${sw("autoSay", "新词卡与看词题自动读音", "今日回忆、听音和拼写题始终读词；手动读音不计提示") }
+      ${L ? `<p class="hint">试听词：${esc(sample)}</p>` : ""}
     </section>
-    <section class="panel"><h2>学习</h2>
+    <section class="panel"><h2>今日学习</h2>
+      <div class="row"><span><b>考试日期</b><small>用于首页倒计时和考前复习安排</small></span><input type="date" data-set="examDate" value="${esc(S.examDate)}"></div>
+      <div class="row"><span><b>每日推荐词数上限</b><small>到期复习、遗忘重学和旧词校准共用上限；实际推荐量还会受时间预算与近期表现影响，次日生效</small></span>
+        ${seg("dailyCap", [[25, "25"], [50, "50"], [60, "60"], [80, "80"], [120, "120"], [200, "200"]])}</div>
+      <div class="row"><span><b>每日时间预算</b><small>含主任务和最多 5 次同日补测；按预计用时推荐词数，不会计时催促。下一学习日生效</small></span>
+        ${seg("dailyMinutes", [[10, "10 分钟"], [20, "20 分钟"], [30, "30 分钟"]])}</div>
+      <div class="row"><span><b>每轮学习词数</b><small>只拆分今日计划，不增加总量；“不限”表示整份计划一轮做完，下一轮生效</small></span>
+        ${seg("roundSize", [[15, "15"], [25, "25"], [40, "40"], [0, "不限"]])}</div>
+      <p class="note">主动回忆由你自评，困难词当轮补测；新词学习不计入每日完成条件。</p>
+    </section>
+    <section class="panel"><h2>学习新词</h2>
+      <div class="row"><span><b>每个新词过几关</b><small>先看词卡，再依次练词义、听音、拼写；题型按下方开关调整</small></span>
+        ${seg("learnStages", [[1, "1 关"], [2, "2 关"], [3, "3 关"]])}</div>
+      <div class="row"><span><b>一次学多少</b><small>按完整词群取词，不拆最后一群；过关后自动记为已学，下一次开始学新词时生效</small></span>
+        ${seg("learnSize", [[1, "1 群"], [2, "2 群"], [15, "至少 15 词"]])}</div>
+      ${sw("quizListen", "新词听音关卡", "关闭后，第 2 关改为看义选词")}
+      ${sw("quizSpell", "新词拼写关卡", "关闭后，第 3 关改为看义选词；若与上一关重复且有例句，则改为语境填空")}
+      ${sw("autoEx", "新词词卡自动读例句", "看新词卡时播放例句；开启自动读词后会接着读") }
+    </section>
+    <section class="panel"><h2>课文阅读</h2>
       ${sw("mask", "背诵模式", "遮住释义、记忆法和译文；点单词意思一次全开，例句译文单独点开。课文页右下角「遮」也能随手切换")}
       ${sw("hideKnown", "隐藏已会", "标为「已会」的词卡不显示，磨耳朵也跳过它们")}
       ${sw("phLine", "例句词组下划线", "例句里标出的词组（书外补充）画虚线；关掉只是不画线，点词组照样显示词组释义")}
@@ -779,30 +799,14 @@ function renderSettings() {
         <details><summary>安装链接只显示源码？</summary><p>在油猴中添加新脚本，粘贴全部源码并保存。</p></details>
       </div>
     </section>
-    <section class="panel"><h2>学习新词</h2>
-      <div class="row"><span><b>每个新词过几关</b><small>先看一遍词卡，再按顺序考：看词选义 → 听音选义 → 拼写（关掉听音题时第 2 关换成看义选词；词组第 3 关用看义选词代替拼写）；错满 3 次后再答对一次也算过关</small></span>
-        ${seg("learnStages", [[1, "1 关"], [2, "2 关"], [3, "3 关"]])}</div>
-      <div class="row"><span><b>一次学多少</b><small>按书顺序取词群；「至少 15 词」不够 15 个就接下一群，最后一群整群带上不拆。每一群的词全部过关就记为今天学的，中途退出已过关的群照样算。下一次进学习新词起生效</small></span>
-        ${seg("learnSize", [[1, "1 群"], [2, "2 群"], [15, "至少 15 词"]])}</div>
-      ${sw("autoEx", "词卡自动读例句", "「先看一遍」的词卡读完单词接着读例句")}
-    </section>
-    <section class="panel"><h2>复习</h2>
-      <div class="row"><span><b>考试日期</b><small>首页倒计时用</small></span><input type="date" data-set="examDate" value="${esc(S.examDate)}"></div>
-      <div class="row"><span><b>每日主任务上限</b><small>到期、遗忘重学和旧词校准共同计入；再按时间预算和近期表现减少推荐量。调整从下一学习日生效</small></span>
-        ${seg("dailyCap", [[25, "25"], [50, "50"], [60, "60"], [80, "80"], [120, "120"], [200, "200"]])}</div>
-      <div class="row"><span><b>每日时间预算</b><small>含主任务和最多 5 次同日补测；按预计用时推荐词数，不会计时催促。下一学习日生效</small></span>
-        ${seg("dailyMinutes", [[10, "10 分钟"], [20, "20 分钟"], [30, "30 分钟"]])}</div>
-      <div class="row"><span><b>今日学习每轮最多</b><small>分轮做完固定的今日计划；中途退出后可以继续，不额外添加积压词</small></span>
-        ${seg("roundSize", [[15, "15"], [25, "25"], [40, "40"], [0, "不限"]])}</div>
-      <div class="row"><span><b>日常词义复习</b><small>今日学习随时可做，使用原词卡的主动回忆，不按答题速度判忘记；没有强制晚间任务。自由抽查可单独选择词义、选择识别、听音、拼写或语境；专项成绩不改变词义等级。原出题方式设置仍保存在记录中。</small></span></div>
-      <div class="row"><span><b>抽查顺序</b><small>自由抽查用（「今日学习」按统一计划排，「学习新词」按书顺序）。巩固页上的同一个开关</small></span>
+    <section class="panel"><h2>自由练习</h2>
+      <div class="row"><span><label for="settingsPractice"><b>默认练习类型</b></label><small>自由抽查进入时使用；今日学习始终采用词义回忆</small></span>
+        <select id="settingsPractice" data-set="practiceType">${[["meaning", "词义回忆"], ["recognition", "看词选义"], ["reverse", "看义选词"], ["listen", "听音"], ["spell", "拼写"], ["context", "语境"]].map(([v, label]) => `<option value="${v}"${S.practiceType === v ? " selected" : ""}>${label}</option>`).join("")}</select></div>
+      <div class="row"><span><b>抽查顺序</b><small>只影响自由练习；今日学习按计划排序，新词按课件顺序</small></span>
         ${seg("drillOrder", [["course", "课件顺序"], ["alpha", "字母顺序"], ["freq", "重要性"], ["random", "随机"]])}</div>
-      ${sw("autoSay", "自动读单词", "用于新学词卡和选择题；主动回忆会读当前词，手动读音不计提示。听音、拼写题总会读")}
-      ${sw("autoNext", "答对后自动下一题", "选择题、拼写题判「记得」时停 1.5 秒自动进下一题，期间按任意键或点页面就停在这张卡；模糊、答错仍等你按「继续」")}
-      <div class="row"><span><b>想得久算模糊</b><small>选择题答对但超过时限记为模糊（标准：看词选义、听音 8 秒，看义选词 10 秒，例句 15 秒）；关掉就只看对错。翻卡自评不受影响</small></span>
+      ${sw("autoNext", "答对后自动下一题", "用于新词闯关和自由练习的选择、拼写题；答对停留 1.5 秒，点击或按键可暂停。主动回忆评分后直接继续")}
+      <div class="row"><span><b>选择题判分速度</b><small>用于新词闯关与自由选择题；超时答对记为模糊，不影响主动回忆自评</small></span>
         ${seg("slowMode", [["loose", "宽松"], ["std", "标准"], ["strict", "严格"], ["off", "关掉"]])}</div>
-      ${sw("quizListen", "新学出听音题", "关掉后学习新词第 2 关换成看义选词；自由抽查手动选择听音时仍可练习")}
-      ${sw("quizSpell", "新学出拼写题", "用于新学第 3 关；自由抽查可单独练习。词义熟练度始终不要求通过拼写或例句题")}
     </section>
     <section class="panel"><h2>磨耳朵</h2>
       <div class="row"><span><b>播放范围</b><small>从右下角 🎧 开始</small></span>${seg("scope", [["group", "当前词群"], ["lesson", "整课"]])}</div>
@@ -914,7 +918,7 @@ $("#settingsView").addEventListener("click", e => {
     return;
   }
   const b = t.closest("button[data-set]");
-  if (b) { const k = b.dataset.set, v = b.dataset.val; setS(k, NUM_SETS.includes(k) ? +v : v); renderSettings(); if (k === "voice") speak(allEntries()[0].word); return; }
+  if (b) { const k = b.dataset.set, v = b.dataset.val; setS(k, NUM_SETS.includes(k) ? +v : v); renderSettings(); if (k === "voice" && L) speak(allEntries()[0].word); return; }
   if (t.id === "clearKnown" && confirm(`清空 ${known.size} 个「已会」记录？`)) { [...known].forEach(w => setKnown(w, false)); renderSettings(); }
   if (t.id === "bkExport") bkDownload("");
   if (t.id === "bkImport") $("#bkFile").click();

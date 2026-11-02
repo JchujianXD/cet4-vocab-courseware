@@ -239,3 +239,11 @@ test('同步另一份词单已完成的主任务抵扣推荐量，外部未完�
   assert.match(h.html,/今日计划已完成/);assert.equal(h.data.get('srs:dose').recall.result,'failed');assert.equal(h.data.get('log:'+day),undefined);
   await h.navigate('#/');assert.match(h.html,/今日计划已完成/);
 });
+
+test('复习偏多时主动选择的新词学习量仍按设置执行', async () => {
+  const h = harness('#/drill/learn', {'set:dailyCap': 1});
+  h.context.S.learnSize = 2;
+  await h.render();
+  h.click({studied: '1'});
+  assert.equal([].concat(h.data.get('drill:learn').g).length, 2);
+});

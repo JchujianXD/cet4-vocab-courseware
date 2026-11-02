@@ -261,8 +261,8 @@ const Study = (() => {
   /* 学习新词：按设置一次学 1 群 / 2 群 / 至少 15 词（learnSize；不够 15 就按书顺序接下一群，最后一群整群带上），
      取下一个没勾的词群（手动勾过的跳过）；今天做到一半、还没勾完的那几群优先接着做（这时不按新的 learnSize 重取）。
      已会的、别的词群里已经有复习卡的词不出；几群里重复的词只出一次（算在前一群）。
-     复习偏多 / 积压太多（dueStat 的档位不是 easy）时今天按 1 群取词，不管设置是几 */
-  const learnN = () => (dueStat().tier === "easy" ? +S.learnSize || 1 : 1);
+     新词由用户自选，学习量始终按 learnSize；首页的复习建议不覆盖用户设置 */
+  const learnN = () => +S.learnSize || 1;
   const svKeys = sv => (sv && sv.g ? [].concat(sv.g) : []);   // 进度里的 g：旧版是一个词群键，一次学多群时是数组
   function learnResume() {
     const all = seq();
