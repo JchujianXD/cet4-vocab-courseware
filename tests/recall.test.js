@@ -39,7 +39,26 @@ test("补测独立成功不覆盖首次失败；单词很少时队列仍有限",
   assert.deepEqual(s.current.hints, []); assert.equal(s.current.revealed, false);
   s = answer(s, "independent");
   assert.equal(s.first.word0.result, "failed"); assert.equal(R.summary(s).retrySuccess, 1);
-  assert.deepEqual(R.summary(s).strengthen, []);
+  assert.deepEqual(R.summary(s).strengthen, ["word0"]);
+});
+test("四十个困难词均保留待巩固，有限补测成功或失败都不覆盖首次表现", () => {
+  let s = R.create(items(40), day, "daily");
+  while (s.current) s = answer(s, s.current.retry ? "independent" : "failed");
+  const result = R.summary(s);
+  assert.equal(result.completed, 40); assert.equal(result.failed, 40);
+  assert.equal(result.retries, 5); assert.equal(result.retrySuccess, 5);
+  assert.equal(result.strengthen.length, 40); assert.ok(result.finished);
+});
+test("混合首答统计按真实记录计算，补测预算外的困难词仍待巩固", () => {
+  let s = R.create(items(40), day, "daily");
+  const results = [...Array(12).fill("independent"), ...Array(8).fill("effort"),
+    ...Array(5).fill("hinted"), ...Array(15).fill("failed")];
+  let first = 0;
+  while (s.current) s = answer(s, s.current.retry ? "failed" : results[first++]);
+  const result = R.summary(s);
+  assert.equal(result.completed, 40); assert.equal(result.independent + result.effort, 20);
+  assert.equal(result.hinted, 5); assert.equal(result.failed, 15);
+  assert.equal(result.strengthen.length, 20); assert.equal(result.retries, 5);
 });
 test("卡片生命周期改变或删除，断点不能继承旧结果；旧选择成绩保留原义", () => {
   let s = answer(R.create(items(2), day, "a"), "independent");

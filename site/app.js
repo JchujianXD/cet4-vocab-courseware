@@ -15,11 +15,11 @@ loadKnown();
 const VOICE_NAMES = {ava: "Ava", andrew: "Andrew", sonia: "Sonia", ryan: "Ryan"};
 const VOICE_DESC = {ava: "美式 · 女声", andrew: "美式 · 男声", sonia: "英式 · 女声", ryan: "英式 · 男声"};
 const DEFAULTS = {voice: "ava", rate: 1, mask: false, hideKnown: false, scope: "group", withZh: true, loop: false, theme: "auto",
-  examDate: "2026-12-12", dailyCap: 50, dailyMinutes: 20, autoSay: true, drillOrder: "course", drillMode: "quiz", phLine: true, videoPrefer: "精讲带背", videoWebfull: true,
+  examDate: "2026-12-12", dailyCap: 40, dailyMinutes: 20, autoSay: true, drillOrder: "course", drillMode: "quiz", phLine: true, videoPrefer: "精讲带背", videoWebfull: true,
   /* 学习新词、复习（study.js 用，默认值 = 加设置之前的行为）：learnStages 每个新词过几关（1 看词选义 / 2 + 听音选义 / 3 + 拼写）；
      learnSize 一次学多少（1 / 2 群，15 = 至少 15 词）；autoEx 学新词词卡读完单词接着读例句；autoNext 答对（记得）后 1.5 秒自动下一题；
      slowMode 想得久算模糊（loose ×1.5 / std / strict ×0.75 / off 不按时间）；quizListen、quizSpell 出不出听音、拼写题；roundSize 今天到期每轮最多几个（0 = 不限） */
-  learnStages: 2, learnSize: 1, autoEx: false, autoNext: false, slowMode: "std", quizListen: true, quizSpell: true, roundSize: 25, practiceType: "meaning"};
+  learnStages: 2, learnSize: 1, autoEx: false, autoNext: false, slowMode: "std", quizListen: true, quizSpell: true, roundSize: 20, practiceType: "meaning"};
 const NUM_SETS = ["rate", "dailyCap", "dailyMinutes", "learnStages", "learnSize", "roundSize"];   // 设置页按钮上的值是字符串，这几个存成数字
 const S = {...DEFAULTS};
 const loadSettings = () => Object.assign(S, DEFAULTS, Object.fromEntries(Sync.entries("set:")));
@@ -767,12 +767,12 @@ function renderSettings() {
     <section class="panel"><h2>今日学习</h2>
       <div class="row"><span><b>考试日期</b><small>用于首页倒计时和考前复习安排</small></span><input type="date" data-set="examDate" value="${esc(S.examDate)}"></div>
       <div class="row"><span><b>每日推荐词数上限</b><small>到期复习、遗忘重学和旧词校准共用上限；实际推荐量还会受时间预算与近期表现影响，次日生效</small></span>
-        ${seg("dailyCap", [[25, "25"], [50, "50"], [60, "60"], [80, "80"], [120, "120"], [200, "200"]])}</div>
+        ${seg("dailyCap", [[25, "25"], [40, "40"], [50, "50"], [60, "60"], [80, "80"], [120, "120"], [200, "200"]])}</div>
       <div class="row"><span><b>每日时间预算</b><small>含主任务和最多 5 次同日补测；按预计用时推荐词数，不会计时催促。下一学习日生效</small></span>
         ${seg("dailyMinutes", [[10, "10 分钟"], [20, "20 分钟"], [30, "30 分钟"]])}</div>
-      <div class="row"><span><b>每轮学习词数</b><small>只拆分今日计划，不增加总量；“不限”表示整份计划一轮做完，下一轮生效</small></span>
-        ${seg("roundSize", [[15, "15"], [25, "25"], [40, "40"], [0, "不限"]])}</div>
-      <p class="note">主动回忆由你自评，困难词当轮补测；新词学习不计入每日完成条件。</p>
+      <div class="row"><span><b>每轮学习词数</b><small>只拆分今日计划，不增加总量；“不限”表示整份计划一轮做完，下一学习日生效</small></span>
+        ${seg("roundSize", [[15, "15"], [20, "20"], [25, "25"], [40, "40"], [0, "不限"]])}</div>
+      <p class="note">主动回忆由你自评，困难词可在预算内有限补测；新词学习不计入每日完成条件。</p>
     </section>
     <section class="panel"><h2>学习新词</h2>
       <div class="row"><span><b>每个新词过几关</b><small>先看词卡，再依次练词义、听音、拼写；题型按下方开关调整</small></span>

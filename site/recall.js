@@ -67,7 +67,8 @@ const Recall = (() => {
       retrySuccess: Object.values(s.retry).filter(r => independent(r.result)).length,
       retryHinted: Object.values(s.retry).filter(r => r.result === "hinted").length,
       retryFailed: Object.values(s.retry).filter(r => r.result === "failed").length,
-      strengthen: difficult.filter(w => !independent(s.retry[w]?.result)), finished: !s.queue.length};
+      // 同日补测只提供练习，不抵消首次困难表现；仍需后续跨日验证。
+      strengthen: difficult, finished: !s.queue.length};
   }
   function nightStats(items, record) {
     const done = items.filter(x => record?.items?.[x.card.life]);

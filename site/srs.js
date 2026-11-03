@@ -432,7 +432,7 @@ const SRS = (() => {
     return {active: state?.mode === "active", total: cohort.length, calibrated, remaining, coverage, ratio, load, ready};
   }
   function dailyBudget(items, day, opt = {}) {
-    const minutes = Math.max(5, Math.min(60, +opt.minutes || 20)), cap = Math.max(1, Math.min(200, +opt.cap || 50));
+    const minutes = Math.max(5, Math.min(60, +opt.minutes || 20)), cap = Math.max(1, Math.min(200, +opt.cap || 40));
     const recent = items.flatMap(x => x.card.recall?.history || []).filter(h => h.day >= add(day, -6) && h.day <= day);
     const weak = recent.filter(h => h.result === "failed" || h.result === "hinted").length;
     const seconds = 20 + (recent.length ? Math.round(20 * weak / recent.length) : 0);
@@ -500,6 +500,9 @@ const SRS = (() => {
     if (/^(plan|task):/.test(key) && (a[0].reset || 0) !== (b[0].reset || 0)) return (a[0].reset || 0) > (b[0].reset || 0) ? a : b;
     if (key.startsWith("plan:") && a[0].v === 1 && b[0].v === 1) {
       const rank = p => `${String(p.created || 0).padStart(16, "0")}|${p.id}|${JSON.stringify(p)}`;
+      // 同一旧计划升级后固定了分轮大小，旧设备的副本不能抹掉这个字段。
+      if (a[0].id === b[0].id && a[0].created === b[0].created && Number.isFinite(a[0].roundSize) !== Number.isFinite(b[0].roundSize))
+        return Number.isFinite(a[0].roundSize) ? a : b;
       return rank(a[0]) <= rank(b[0]) ? a : b;
     }
     if (key.startsWith("task:") && a[0].life === b[0].life) {

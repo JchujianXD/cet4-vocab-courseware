@@ -247,3 +247,46 @@ test('复习偏多时主动选择的新词学习量仍按设置执行', async ()
   h.click({studied: '1'});
   assert.equal([].concat(h.data.get('drill:learn').g).length, 2);
 });
+
+test('今日首答与待巩固保留，额外巩固不重计成绩或改排期', async () => {
+  const h = await harness('#/drill/due', {'set:dailyCap':2}).render();
+  const first=h.word();
+  assert.match(h.html,/今天到这里/);
+  h.click({recallReveal:'1'}); h.click({recallRate:'failed'});
+  await h.navigate('#/');
+  assert.match(h.html,/计划内首答 1\/2 词/); assert.match(h.html,/待巩固 1/); assert.match(h.html,/继续学习/);
+  await h.navigate('#/drill/due');
+  let count=0;
+  while(h.word() && count++<10){h.click({recallReveal:'1'});h.click({recallRate:'independent'});}
+  assert.match(h.html,/今日计划已完成/); assert.match(h.html,/待巩固 1/);
+  assert.match(h.html,/已达到掌握标准 0/); assert.match(h.html,/继续巩固/);
+  const card=copy(h.data.get('srs:'+first)), log=copy(h.data.get('log:'+day));
+  await h.navigate('#/drill/strengthen'); assert.equal(h.word(),first);
+  assert.doesNotMatch(h.html,/data-chop/); h.key('S'); h.click({chop:'1'});
+  assert.equal(h.word(),first); assert.deepEqual(h.data.get('srs:'+first),card);
+  h.click({recallReveal:'1'});h.click({recallRate:'independent'});
+  assert.deepEqual(h.data.get('srs:'+first),card); assert.deepEqual(h.data.get('log:'+day),log);
+  assert.match(h.html,/自愿巩固只供练习/);
+  await h.navigate('#/');assert.match(h.html,/待巩固 1/);
+});
+
+test('当日计划固定每轮数量，设置变化次日才影响新计划', async () => {
+  const h=await harness('#/', {'set:dailyCap':2}).render();
+  const p=copy(h.data.get('plan:'+day)); assert.equal(p.roundSize,25);
+  h.context.S.roundSize=1; await h.navigate('#/drill/due');
+  assert.equal(h.data.get("drill:due").rc.w.length,2);
+  assert.deepEqual(h.data.get('plan:'+day),p);
+  h.setDay(SRS.add(day,1));await h.navigate('#/');
+  assert.equal(h.data.get('plan:'+SRS.add(day,1)).roundSize,1);
+});
+
+test('计划外首答单列，历史抵扣和退役词不冒充首答', async () => {
+  const h=await harness('#/').render();
+  const a=h.data.get('srs:specific'), b=h.data.get('srs:dose');
+  h.data.set('plan:'+day,{v:1,d:day,id:'old',created:1,credited:1,items:[{word:'retired',life:'retired|1',kind:'review'}],budget:{limit:2,cap:2,minutes:20,seconds:20,retryLimit:0},roundSize:20});
+  for(const [word,card] of [['specific',a],['dose',b]]) h.data.set(SRS.taskKey(day,card.life),{d:day,word,life:card.life,first:{result:'failed',planned:true,at:1}});
+  await h.navigate('#/');
+  assert.match(h.html,/计划内首答 0\/2 词/); assert.match(h.html,/计划外首答 2 词/);
+  assert.match(h.html,/历史抵扣、已退役或抵扣的计划词不计入首答/);
+  assert.match(h.html,/待巩固 2/);
+});

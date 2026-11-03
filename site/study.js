@@ -145,9 +145,11 @@ const Study = (() => {
     let p = Sync.get(planKey(), 0);
     if (!p || p.v !== 1 || p.d !== T() || !Array.isArray(p.items) || !Number.isFinite(p.budget?.limit)) {
       memoryState();
-      p = SRS.makeDailyPlan(liveCards(), T(), {cap: cap(), minutes: S.dailyMinutes, id: newId(), created: Date.now(), credited: logOf(T()).dv || 0});
+      p = {...SRS.makeDailyPlan(liveCards(), T(), {cap: cap(), minutes: S.dailyMinutes, id: newId(), created: Date.now(), credited: logOf(T()).dv || 0}), roundSize: +S.roundSize || 0};
       Sync.set(planKey(), p);
     }
+    // 旧计划没有分轮设置，首次读取时固定当前值，保留已有词单及断点。
+    if (!Number.isFinite(p.roundSize)) { p = {...p, roundSize: +S.roundSize || 0}; Sync.set(planKey(), p); }
     return p;
   }
   function planStatus() {
@@ -161,11 +163,14 @@ const Study = (() => {
     const L = due.length + (lg.dv || 0);
     return {due, must, rest: due.filter(x => !SRS.isMust(x.card, T())), lg, L, tier: SRS.loadTier(L, dailyPlan().budget.limit)};
   }
-  const dueRound = () => planStatus().rows.filter(x => !x.done || x.pendingRetry).slice(0, roundN()).map(x => x.x).filter(Boolean);
-  const dueRoundN = () => Math.min(planStatus().todo, roundN());
+  const dailyRoundN = () => dailyPlan().roundSize || Infinity;
+  const dueRound = () => planStatus().rows.filter(x => !x.done || x.pendingRetry).slice(0, dailyRoundN()).map(x => x.x).filter(Boolean);
+  const dueRoundN = () => Math.min(planStatus().todo, dailyRoundN());
   const dueTodo = () => planStatus().todo;
   // 额外复习是自由选择，不追加到今日推荐计划。
   const MORE_N = 25;
+  const strengthenRows = status => status.rows.filter(row => !row.waived && ["hinted", "failed"].includes(row.record.first?.result));
+  const strengthenRound = () => strengthenRows(planStatus()).map(row => row.x).filter(Boolean);
   const moreRound = () => { const t = T(); return SRS.queue(liveCards(), t, t, lvOpt()).filter(x => !SRS.isMust(x.card, t)).slice(0, MORE_N); };
   const isRound = sc => sc === "due" || sc === "more";   // 按到期复习一轮轮出的范围：词单按 queue 排、接着做只认进度里的词单、结束页按类型统计
 
@@ -176,6 +181,7 @@ const Study = (() => {
     let m;
     if (sc === "due") return {title: "今日学习", items: dueRound};
     if (sc === "more") return {title: "多做几个", items: moreRound};
+    if (sc === "strengthen") return {title: "自愿巩固", items: strengthenRound};
     if (sc === "learn") return {title: "学习新词", items: () => []};   // 取词见 learnItems
     if (sc === "today") return {title: "今天学的", items: () => inLearnRange(t, t)};
     if (sc === "yesterday") { const y = SRS.add(t, -1); return {title: "昨天学的", items: () => inLearnRange(y, y)}; }
@@ -374,6 +380,14 @@ const Study = (() => {
         <small>${esc(S.examDate)} · 今天 ${md(t)} 周${WEEK[SRS.dow(t)]}</small></div>
       ${n ? `<div class="streak" title="连续学习天数">🔥 连续 ${n} 天</div>` : ""}</div>`;
   }
+  // 首答来自分词记录；已退役或抵扣的词不凭计划进度推算回忆表现。
+  function planResults(status) {
+    const rows = status.rows.filter(row => !row.waived && row.record.first);
+    const count = result => rows.filter(row => row.record.first.result === result).length;
+    const mastered = rows.filter(row => row.x && SRS.level(row.x.card, lvOpt()) >= 4).length;
+    return {completed: rows.filter(row => !row.external).length, external: rows.filter(row => row.external).length, independent: count("independent") + count("effort"), hinted: count("hinted"), failed: count("failed"),
+      strengthen: strengthenRows(status), mastered, accumulating: rows.filter(row => row.x && SRS.level(row.x.card, lvOpt()) < 4).length};
+  }
   function modToday() {
     const status = planStatus(), {plan, total, completed, finished, pendingRetries, retries} = status;
     const state = memoryState(), migration = SRS.migrationStatus(liveCards(), T(), state, plan.budget.limit);
@@ -384,12 +398,16 @@ const Study = (() => {
     }).filter(Boolean).join(" · ");
     const reason = !finished && !migration.active && dueStat().tier === "heavy" ? "今天先巩固旧词，新词不着急。" : "";
     const retryText = pendingRetries ? ` · 还有 ${pendingRetries} 次同日补测` : retries ? ` · 已补测 ${retries} 次` : "";
-    const progress = `${completed}/${total} 词${retryText}`;
+    const results = planResults(status);
+    const progress = `计划内首答 ${results.completed}/${total} 词${retryText}${results.external ? ` · 计划外首答 ${results.external} 词` : ""}`;
+    const adjustment = plan.credited || status.rows.some(row => row.waived || !row.x && !row.record.first);
     return `<wa-card class="mod today"><div slot="header" class="mh"><b>今日学习</b><span class="sub">${migration.active ? "旧词记忆校准" : "日常复习"}</span></div>
       <ol class="steps4"><li class="${finished ? "done" : ""}"><span class="dot">${finished ? "✓" : "1"}</span>
         <div class="sd"><b>${finished ? "今日计划已完成" : `今天推荐 ${total} 词`}</b><small>${progress}</small>
-          ${breakdown ? `<small>${breakdown}</small>` : ""}<small>${finished ? "今天可以安心结束，剩余词会自动安排。" : `预算 ${plan.budget.minutes} 分钟 · 可分次完成`}</small></div>
-        ${!finished ? btn("#/drill/due", progGet("due") || completed ? "继续学习" : "开始学习", 'variant="brand"') : ""}</li></ol>
+          <small>独立想起 ${results.independent} · 提示后想起 ${results.hinted} · 未想起/想错 ${results.failed}</small>
+          <small><b>待巩固 ${results.strengthen.length}</b> · 已达到掌握标准 ${results.mastered} · 尚在积累证据 ${results.accumulating}</small>
+          ${breakdown ? `<small>${breakdown}</small>` : ""}${adjustment ? `<small>历史抵扣、已退役或抵扣的计划词不计入首答。</small>` : ""}<small>${finished ? "今天可以安心结束，剩余词会自动安排。" : `预算 ${plan.budget.minutes} 分钟 · 可分次完成`}</small></div>
+        ${!finished ? btn("#/drill/due", progGet("due") || completed ? "继续学习" : "开始学习", 'variant="brand"') : results.strengthen.some(row => row.x) ? btn("#/drill/strengthen", "继续巩固", 'variant="brand"') : ""}</li></ol>
       ${reason ? `<p class="note">${reason}</p>` : ""}
       ${migration.active ? `<p class="note">旧词已校准 ${migration.calibrated}/${migration.total} · ${migration.ready ? "可以恢复日常学习了。" : "先巩固旧词，新词自选。"}</p>${migration.ready ? `<div class="ops plan-actions"><wa-button size="small" data-migration-exit="1">恢复日常学习</wa-button></div>` : ""}` : ""}</wa-card>`;
   }
@@ -723,7 +741,7 @@ const Study = (() => {
     const res = {g: 0, m: 0, f: 0}; for (const r of rated.values()) res[r]++;
     // 今天到期：这一轮开始时给每个词定类型（评分后 s、d 就变了），接着做沿用进度里的；旧进度没有就不按类型统计
     const mk = daily ? Object.fromEntries(planStatus().rows.map(x => [x.word, x.kind])) : !isRound(sc) || preset ? null : keep ? keep.mk || null : Object.fromEntries(items.filter(x => x.card).map(x => [x.word, SRS.mustKind(x.card, T())]));
-    D = {sc, progressScope, practice, daily, plan, attemptId: keep?.id || newId(), mk, title:learn && lg.g ? `学习新词 · ${grpLabel(lg.gs.map(p => p.g))}` : `${info.title}${practice ? " · " + PRACTICES.find(([p]) => p === practice)[1] : ""}`, items, learn, lg, save: !preset, flip: false, pool, ...pp, hash,
+    D = {sc, progressScope, practice, daily, extra: sc === "strengthen", plan, attemptId: keep?.id || newId(), mk, title:learn && lg.g ? `学习新词 · ${grpLabel(lg.gs.map(p => p.g))}` : `${info.title}${practice ? " · " + PRACTICES.find(([p]) => p === practice)[1] : ""}`, items, learn, lg, save: !preset, flip: false, pool, ...pp, hash,
       stages: learn ? Math.min(3, Math.max(1, +S.learnStages || 2)) : 0,   // 学习新词每个词过几关（这一轮开始时定下）
       queue: learn ? rest.slice(0, WINDOW) : rest, pending: learn ? rest.slice(WINDOW) : [],
       st: new Map(keep ? Object.entries(keep.st || {}) : []), kind: new Map(), cf: new Map(), rated, done, passed: items.length - rest.length, res, q: null, hist: [], back: 0};
@@ -821,8 +839,8 @@ const Study = (() => {
     const rate = (r, label, variant) => `<wa-button variant="${variant}" data-recall-rate="${r}">${label}</wa-button>`;
     const controls = q.answered ? `<p class="recall-verdict">${RECALL_LABEL[q.answered]}</p><wa-button variant="brand" data-next="1">继续 <kbd>空格</kbd></wa-button>` : q.revealed
       ? `<div class="recall-ratings">${q.choiceWrong ? "" : q.hints.length ? rate("hinted", "提示后想起", "warning") : rate("independent", "想起了", "success") + rate("effort", "想得费劲", "brand")}${rate("failed", "没想起", "danger")}</div>`
-      : `<wa-button variant="brand" data-recall-reveal="1">揭晓 <kbd>空格</kbd></wa-button>${chopBtn(x)}`;
-    put(`<div class="drill recall flipped"><div class="dbar"><span>${esc(D.title)}${kind ? " · " + ({review: "到期复习", relearn: "遗忘重学", calibrate: "旧词校准"})[kind] : ""}${q.retry ? " · 补测" : ""}</span><wa-progress-bar value="${s.total ? Math.round(s.completed / s.total * 100) : 0}"></wa-progress-bar><span>已做 ${s.completed}/${s.total} · 补测 ${s.retries}/${D.rc.added}</span><a href="#/" class="dx" title="退出并保存">✕</a></div><div class="dcard${q.revealed ? "" : " locked"}">${head}${hints}${relearn}</div><div class="dops">${controls}</div></div>`);
+      : `<wa-button variant="brand" data-recall-reveal="1">揭晓 <kbd>空格</kbd></wa-button>${D.extra ? "" : chopBtn(x)}`;
+    put(`<div class="drill recall flipped"><div class="dbar"><span>${esc(D.title)}${kind ? " · " + ({review: "到期复习", relearn: "遗忘重学", calibrate: "旧词校准"})[kind] : ""}${q.retry ? " · 补测" : ""}</span><wa-progress-bar value="${s.total ? Math.round(s.completed / s.total * 100) : 0}"></wa-progress-bar><span>已做 ${s.completed}/${s.total} · 补测 ${s.retries}/${D.rc.added}</span><a href="#/" class="dx" title="退出并保存">${D.daily ? "今天到这里" : "✕"}</a></div><div class="dcard${q.revealed ? "" : " locked"}">${head}${hints}${relearn}</div><div class="dops">${controls}</div></div>`);
     {
       const cover = (selector, kind, label) => {
         for (const el of view().querySelectorAll(selector)) {
@@ -845,6 +863,7 @@ const Study = (() => {
     if (kind === "translation") { D.rc.current.zhRevealed = true; progSave(); showRecall(); }
   }
   function chopRecall() {
+    if (D.extra) return;
     const q = D.rc.current, x = D.q.x, c = Sync.get(cardKey(x), 0);
     if (D.rc.d !== T()) { nextRecall(); return; }
     if (!q || q.answered || !c || c.life !== D.rc.refs[x.word] || known.has(x.word)) return;
@@ -889,10 +908,10 @@ const Study = (() => {
     let schedule = null, taskKind = "free";
     if (D.daily && q.retry && !planStatus().rows.find(row => row.life === c?.life)?.pendingRetry) { nextRecall(); return; }
     // 断点比卡片旧（例如另一端已完成同一题）时，以已落盘的首次结果为准，不能只跳过计数却显示新成绩。
-    const recorded = !q.retry && (savedTask.first || (c && SRS.firstToday(c, T())) || c?.recall?.results?.[id]);
+    const recorded = !D.extra && !q.retry && (savedTask.first || (c && SRS.firstToday(c, T())) || c?.recall?.results?.[id]);
     if (recorded) { q.hints = recorded.hints || []; q.choiceWrong = recorded.result === "failed"; result = recorded.result; }
     D.rc = Recall.answer(D.rc, result); result = D.rc.current.answered;
-    if (!q.retry && !recorded && c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
+    if (!D.extra && !q.retry && !recorded && c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
       const next = SRS.rateRecall(c, result, T(), {id, at, hints: q.hints, key: x.word, exam: S.examDate});
       if (next !== c) {
         const lg = {...logOf(T())}, r = SRS.recallGrade(result);
@@ -909,7 +928,7 @@ const Study = (() => {
         schedule = recallSchedule(next);
       }
     }
-    if (c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
+    if (!D.extra && c && c.life === D.rc.refs[x.word] && !known.has(x.word)) {
       const first = savedTask.first || (recorded ? {...recorded, at: recorded.at || 0} : {result, hints: q.hints, at, due: SRS.isDue(c, T()), must: SRS.isMust(c, T()), task: taskKind, planned: D.daily, kind: D.mk?.[x.word], counted: !!schedule, ...(schedule ? {schedule} : {})});
       const wanted = D.daily && D.rc.queue.some(entry => entry.w === x.word && entry.retry);
       pairs.push([SRS.taskKey(T(), c.life), {...savedTask, d: T(), life: c.life, word: x.word, first,
@@ -926,12 +945,13 @@ const Study = (() => {
     if (D.sc === "today" && !D.practice) pairs.push([nightKey(), {...nightRecord(), finished: true, skipped: false}]);
     if (D.save) Sync.setMany([...pairs, [progKey(D.progressScope), 0]]);
     const more = D.sc === "due" && !D.practice ? dueTodo(dueStat()) : 0;
+    const dailyResults = D.daily ? planResults(planStatus()) : null;
     const types = D.mk ? MK.map(([kind, label]) => {
       const words = D.rc.w.filter(w => D.mk[w] === kind); if (!words.length) return "";
       const records = words.map(w => D.rc.first[w]);
       return `<li><b>${label} ${words.length}</b>：独立 ${records.filter(r => Recall.independent(r?.result)).length} · 提示 ${records.filter(r => r?.result === "hinted").length} · 未想起 ${records.filter(r => r?.result === "failed").length}${records.some(r => r?.result === "legacy") ? "（含旧版成绩）" : ""}</li>`;
     }).join("") : "";
-    view().innerHTML = `<div class="drill end"><h1>${D.daily && !more ? "今日计划已完成" : s.total ? "这一轮任务完成" : "暂无待做词"}</h1><div class="tally"><span>完成 <b>${s.completed}/${s.total}</b></span><span class="g">独立想起 <b>${s.independent + s.effort}</b></span><span>其中费劲 <b>${s.effort}</b></span><span class="m">提示后 <b>${s.hinted}</b></span><span class="f">未想起/想错 <b>${s.failed}</b></span>${s.legacy ? `<span>旧版成绩 <b>${s.legacy}</b></span>` : ""}${s.chopped ? `<span>斩 <b>${s.chopped}</b></span>` : ""}</div>${types ? `<ul class="ktally">${types}</ul>` : ""}<p>补测 ${s.retries}/${D.rc.added} · 独立想起 ${s.retrySuccess} · 提示后 ${s.retryHinted} · 未想起 ${s.retryFailed} · 待加强 ${s.strengthen.length}</p>${s.strengthen.length ? `<p class="note">待加强：${s.strengthen.map(esc).join("、")}</p>` : ""}<p class="note">首次表现已保留。补测不覆盖首次成绩、不推进站点；提示后两天检查，未想起次日检查。未学词只练习，不创建复习卡。</p>${D.daily && !more ? `<p class="note">今天可以安心结束。剩余积压会分批安排，新词由你自行选择。</p>` : ""}${more ? `<p class="note">今日计划还剩 ${more} 词</p>` : ""}<div class="ops">${more ? `<wa-button variant="brand" id="nextRound">继续今日计划</wa-button>` : ""}${btn("#/", "回首页", 'variant="brand"', "medium")}${btn("#/drill", "自由抽查", undefined, "medium")}</div></div>`;
+    view().innerHTML = `<div class="drill end"><h1>${D.daily && !more ? "今日计划已完成" : s.total ? "这一轮任务完成" : "暂无待做词"}</h1><div class="tally"><span>完成 <b>${s.completed}/${s.total}</b></span><span class="g">独立想起 <b>${s.independent + s.effort}</b></span><span>其中费劲 <b>${s.effort}</b></span><span class="m">提示后 <b>${s.hinted}</b></span><span class="f">未想起/想错 <b>${s.failed}</b></span>${s.legacy ? `<span>旧版成绩 <b>${s.legacy}</b></span>` : ""}${s.chopped ? `<span>斩 <b>${s.chopped}</b></span>` : ""}</div>${types ? `<ul class="ktally">${types}</ul>` : ""}${dailyResults ? `<p>今日首轮：独立想起 ${dailyResults.independent} · 提示后想起 ${dailyResults.hinted} · 未想起/想错 ${dailyResults.failed} · <b>待巩固 ${dailyResults.strengthen.length}</b> · 已达到掌握标准 ${dailyResults.mastered} · 尚在积累证据 ${dailyResults.accumulating}</p>${dailyResults.strengthen.length ? `<p class="note">今日待巩固：${dailyResults.strengthen.map(row => esc(row.word)).join("、")}</p>` : ""}` : ""}<p>补测 ${s.retries}/${D.rc.added} · 独立想起 ${s.retrySuccess} · 提示后 ${s.retryHinted} · 未想起 ${s.retryFailed} · 待加强 ${s.strengthen.length}</p>${s.strengthen.length ? `<p class="note">待加强：${s.strengthen.map(esc).join("、")}</p>` : ""}<p class="note">${D.extra ? "自愿巩固只供练习，不改变首次成绩、熟练度或复习排期。" : "首次表现已保留。补测不覆盖首次成绩、不推进站点；提示后两天检查，未想起次日检查。未学词只练习，不创建复习卡。"}</p>${D.daily && !more ? `<p class="note">今天可以安心结束。剩余积压会分批安排，新词由你自行选择。</p>` : ""}${more ? `<p class="note">今日计划还剩 ${more} 词</p>` : ""}<div class="ops">${more ? `<wa-button variant="brand" id="nextRound">继续今日计划</wa-button>` : D.daily && dailyResults.strengthen.some(row => row.x) ? btn("#/drill/strengthen", "继续巩固", undefined, "medium") : ""}${btn("#/", "回首页", 'variant="brand"', "medium")}${btn("#/drill", "自由抽查", undefined, "medium")}</div></div>`;
   }
 
   /* 正在看的那一题：回看时是历史里的，否则是当前题 */

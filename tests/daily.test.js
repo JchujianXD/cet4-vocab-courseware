@@ -12,7 +12,7 @@ test('总预算约束所有队列和首次复习；输入不变、词单可复�
   items.push(items[0]); const before = JSON.stringify(items);
   const p = S.makeDailyPlan(items, day);
   assert.ok(p.items.length <= 50 && p.items.length > 0); assert.equal(new Set(p.items.map(x=>x.word)).size, p.items.length);
-  assert.equal(S.makeDailyPlan(Array.from({length:80},(_,i)=>item(i,"new")),day).items.length,50);
+  assert.equal(S.makeDailyPlan(Array.from({length:80},(_,i)=>item(i,"new")),day).items.length,40);
   assert.deepEqual(new Set(p.items.map(x=>x.kind)), new Set(['calibrate','relearn','review']));
   assert.ok((p.items.length+p.budget.retryLimit)*p.budget.seconds <= 20*60);
   assert.deepEqual(S.makeDailyPlan(items,day),p); assert.equal(JSON.stringify(items),before);
@@ -113,4 +113,12 @@ test('离线设备另一份计划的已完成主任务抵扣总预算，并保�
   records[items[2].card.life].first.result='failed';records[items[2].card.life].retryWanted=true;
   status=S.dailyStatus(plan,items,records);assert.equal(status.completed,2);assert.equal(status.finished,false);assert.equal(status.todo,1);
   assert.equal(status.rows.filter(x=>x.pendingRetry)[0].word,'w3');
+});
+
+test('旧设备同步同一计划不会抹掉固定的每轮数量', () => {
+  const old = S.makeDailyPlan([item(1)], day, {id:'same', created:1});
+  const upgraded = {...old, roundSize:20};
+  for (const [a,b] of [[[old,2],[upgraded,1]], [[upgraded,1],[old,2]]]) {
+    assert.equal(S.mergeStudyRecord('plan:'+day,a,b)[0].roundSize,20);
+  }
 });
