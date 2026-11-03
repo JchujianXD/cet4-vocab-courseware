@@ -402,14 +402,17 @@ const Study = (() => {
     const progress = `计划内首答 ${results.completed}/${total} 词${retryText}${results.external ? ` · 计划外首答 ${results.external} 词` : ""}`;
     const adjustment = plan.credited || status.rows.some(row => row.waived || !row.x && !row.record.first);
     return `<wa-card class="mod today"><div slot="header" class="mh"><b>今日学习</b><span class="sub">${migration.active ? "旧词记忆校准" : "日常复习"}</span></div>
-      <ol class="steps4"><li class="${finished ? "done" : ""}"><span class="dot">${finished ? "✓" : "1"}</span>
-        <div class="sd"><b>${finished ? "今日计划已完成" : `今天推荐 ${total} 词`}</b><small>${progress}</small>
-          <small>独立想起 ${results.independent} · 提示后想起 ${results.hinted} · 未想起/想错 ${results.failed}</small>
-          <small><b>待巩固 ${results.strengthen.length}</b> · 已达到掌握标准 ${results.mastered} · 尚在积累证据 ${results.accumulating}</small>
-          ${breakdown ? `<small>${breakdown}</small>` : ""}${adjustment ? `<small>历史抵扣、已退役或抵扣的计划词不计入首答。</small>` : ""}<small>${finished ? "今天可以安心结束，剩余词会自动安排。" : `预算 ${plan.budget.minutes} 分钟 · 可分次完成`}</small></div>
-        ${!finished ? btn("#/drill/due", progGet("due") || completed ? "继续学习" : "开始学习", 'variant="brand"') : results.strengthen.some(row => row.x) ? btn("#/drill/strengthen", "继续巩固", 'variant="brand"') : ""}</li></ol>
+      <div class="today-status"><span class="today-dot${finished ? " done" : ""}" aria-hidden="true">${finished ? "✓" : `<svg viewBox="0 0 40 40"><circle class="today-ring-track" cx="20" cy="20" r="16"/><circle class="today-ring-value" cx="20" cy="20" r="16" pathLength="100" stroke-dasharray="${total ? completed / total * 100 : 0} 100"/></svg>`}</span><div><b>${finished ? "今日计划已完成" : completed ? "今日计划进行中" : `今天推荐 ${total} 词`}</b><small>${completed} / ${total} 个计划词已完成${pendingRetries ? ` · 待补测 ${pendingRetries} 次` : ""}</small></div>${finished ? `<span class="today-badge">计划完成</span>` : ""}</div>
+      <div class="today-memory"><div class="today-section-label"><b>记忆表现</b><span>以今日首答为准</span></div><div class="today-metrics">
+        <div class="today-independent"><strong>${results.independent}</strong><span>独立想起</span></div><div class="today-strengthen"><strong>${results.strengthen.length}</strong><span>仍需巩固</span></div></div></div>
+      <div class="today-next"><div><b>${results.strengthen.length ? `首答有 ${results.strengthen.length} 个词待巩固` : finished ? "今日首答已完成" : "按自己的节奏，分次完成"}</b><p>${finished ? "计划完成不代表掌握。" : "剩余计划可分次完成。"}</p></div>
+        <div class="today-action">${!finished ? btn("#/drill/due", progGet("due") || completed ? "继续学习" : "开始学习", 'variant="brand"', "medium") : results.strengthen.some(row => row.x) ? btn("#/drill/strengthen", "继续巩固", 'variant="brand"', "medium") : ""}</div></div>
+      <details class="today-details"><summary><span>查看详细数据</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary><div class="today-detail-content">
+        <p>${progress}</p><div class="today-stats"><span>独立想起 ${results.independent}</span><span>提示后想起 ${results.hinted}</span><span>未想起/想错 ${results.failed}</span><span>待巩固 ${results.strengthen.length}</span><span>已达到掌握标准 ${results.mastered}</span><span>尚在积累证据 ${results.accumulating}</span></div>
+        ${breakdown ? `<p class="today-breakdown">${breakdown}</p>` : ""}<p>待巩固指首答提示后想起或未想起/想错；独立想起也可能仍在积累掌握证据。</p>
+        ${adjustment ? `<p>历史抵扣、已退役或抵扣的计划词不计入首答。</p>` : ""}<p>${finished ? "今天可以安心结束，剩余词会自动安排。" : `预算 ${plan.budget.minutes} 分钟 · 可分次完成`}</p></div></details>
       ${reason ? `<p class="note">${reason}</p>` : ""}
-      ${migration.active ? `<p class="note">旧词已校准 ${migration.calibrated}/${migration.total} · ${migration.ready ? "可以恢复日常学习了。" : "先巩固旧词，新词自选。"}</p>${migration.ready ? `<div class="ops plan-actions"><wa-button size="small" data-migration-exit="1">恢复日常学习</wa-button></div>` : ""}` : ""}</wa-card>`;
+      ${migration.active ? `<div class="today-migration"><div><b>旧词记忆校准</b><span>${migration.calibrated} / ${migration.total}</span></div><p class="note">${migration.ready ? "可以恢复日常学习了。" : "先巩固旧词，新词自选。"}</p>${migration.ready ? `<div class="ops plan-actions"><wa-button size="small" data-migration-exit="1">恢复日常学习</wa-button></div>` : ""}</div>` : ""}</wa-card>`;
   }
   function modFree() {
     const nx = nextGroups(1)[0], last = store.get("last") || nx?.lid;
